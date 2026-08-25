@@ -92,6 +92,17 @@ function genCap() {
   return pts
 }
 const caps = Array.from({ length: 6 + (rng() * 6 | 0) }, genCap)
+// necrotic bruise blotches that bloom along the acid tear-tracks — sickly green,
+// jaundice-yellow and bruise-purple, clustered near the inner-lower eye and trailing
+// down where the acid runs. Seeded (eye-local coords: x in -1..1, y downward), so a
+// room shares the rot. Revealed + brightened by `bloodshot` — the rot spreads.
+const bruises = Array.from({ length: 12 + (rng() * 8 | 0) }, () => ({
+  x: (rng() < 0.5 ? -1 : 1) * (0.02 + rng() * 0.2),
+  y: 0.1 + rng() * 0.75,
+  r: 0.05 + rng() * 0.15,
+  hue: [95, 52, 285][rng() * 3 | 0],
+  ph: rng() * 6.28,
+}))
 // small eyes that open in the dark, blink once, and are gone (cosmetic, no hitbox)
 const darkEyes = []
 let nextEyeT = 2600 + rng() * 5000
@@ -870,6 +881,22 @@ function drawSkyElder(now) {
   ctx.strokeStyle = `hsla(2,75%,${34 - bs * 12}%,0.85)`
   ctx.lineWidth = 2
   ctx.stroke()
+
+  // necrotic bruising along the tear-tracks: mottled sickly blotches that discolor
+  // the lower sclera and trail down where the acid runs. Drawn SOLID (source-over) so
+  // it rots the color rather than glowing; more of them, brighter, as it inflames.
+  const shown = Math.ceil(bruises.length * (0.35 + bs * 0.65))
+  for (let i = 0; i < shown; i++) {
+    const b = bruises[i]
+    const mottle = 0.6 + 0.4 * Math.sin(now * 0.001 + b.ph)
+    const al = (0.08 + bs * 0.32 + weepGlow * 0.2) * mottle
+    const bx = cx + b.x * w, by = cy + b.y * w * 0.7, br = b.r * w
+    const bg = ctx.createRadialGradient(bx, by, 0, bx, by, br)
+    bg.addColorStop(0, `hsla(${b.hue},55%,32%,${al})`)
+    bg.addColorStop(1, `hsla(${b.hue},55%,28%,0)`)
+    ctx.fillStyle = bg
+    ctx.beginPath(); ctx.arc(bx, by, br, 0, Math.PI * 2); ctx.fill()
+  }
 
   // everything from here glows additively on top of the wet ball
   ctx.globalCompositeOperation = 'lighter'
