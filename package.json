@@ -1,0 +1,12 @@
+{
+  "name": "aurora-loom",
+  "version": "0.0.1",
+  "description": "js13kgames 2026 entry - theme: Unicorns and Rainbows",
+  "type": "module",
+  "scripts": {
+    "dev": "npx --yes http-server -p 8080 .",
+    "build": "npx --yes esbuild src/main.js --bundle --minify --format=esm --outfile=dist/bundle.js",
+    "spike": "node spike/relay-spike.mjs",
+    "spike:net": "node spike/net-integration-test.mjs"
+  }
+}
