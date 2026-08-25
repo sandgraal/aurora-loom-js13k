@@ -40,6 +40,7 @@ const DEFAULTS = {
   weep: 1,     // how often the eye weeps acid
   creep: 1,    // how far piles spread inward as they grow
   zcap: 2.4,   // how far the world is allowed to zoom out
+  rot: 1,      // how fast the eye inflames (bloodshot ramp speed)
   vrate: 0.46, // the eye's voice: speed (low = slow drawl)
   vpitch: 0.15,// the eye's voice: pitch (low = deep/gravelly)
   grit: 0.6,   // gravel under the voice: growl + vinyl-crackle amount
@@ -122,6 +123,16 @@ let elderPulse = 0
 const gaze = { x: innerWidth / 2, y: innerHeight * 0.2 }
 let pupilDilate = 0
 let eyeTarget = null
+// how inflamed the eye is (0..1): eases up the whole time it watches, jumps on every
+// kill, and only ebbs very slowly — the eye remembers. Drives sclera redness, vein
+// count/creep, and the twitch rate.
+let bloodshot = 0.06
+// a brief color the iris flushes when it swallows a unicorn (it digests the hue)
+let irisFlush = { hue: 0, t: 0 }
+// a visual pulse shared with the audio heartbeat so the veins/glow throb in time
+let heartPhase = 0
+// a nictitating membrane that occasionally sweeps sideways across the eye
+let memb = 0, membT = 3000 + rng() * 6000
 function elder(msg) {
   elderLog.unshift(`${new Date().toLocaleTimeString()}  ${msg}`)
   elderLog.length = 6
@@ -255,99 +266,130 @@ function drawLures(now) {
   }
 }
 
-// ---------- corner piles ----------
-// Where the dead pile up. Four corners; each accumulates "husks" — the leftover
-// color of eaten unicorns. Past a threshold a corner turns into a SUPER pile: it
-// takes on a mutating color, reaches out and drags living unicorns in to consume
-// them, and every meal makes it grow and spread further inward — claiming ground.
-const piles = [0, 1, 2, 3].map((i) => ({
-  i, husks: [], count: 0, sup: false, hue: rng() * 360, r: 0, pull: 0,
-}))
-// world corner + inward unit direction for pile i (0=TL,1=TR,2=BL,3=BR)
-function pileAnchor(i) {
+// ---------- splash-blobs ----------
+// The dead don't just pile in corners — the colored remains smear onto the glass
+// wherever the herd slams into the edge. Each impact/death splats at that point on
+// the world border; nearby splats merge into a growing blob; past a threshold a blob
+// wakes into a SUPER blob that reaches out, drags the living in, eats them, and
+// spreads — crusting the border organically. Blobs ride the (growing) perimeter.
+const blobs = []
+const MERGE_DIST = 70, MAX_BLOBS = 24
+// world point + inward unit normal for a blob sitting at fraction t along its edge
+function blobPos(b) {
   const [l, r, tp, bt] = wBounds()
-  return [(i & 1) ? r : l, (i & 2) ? bt : tp, (i & 1) ? -1 : 1, (i & 2) ? -1 : 1]
+  if (b.edge === 0) return [l + b.t * (r - l), tp, 0, 1]   // top
+  if (b.edge === 1) return [l + b.t * (r - l), bt, 0, -1]  // bottom
+  if (b.edge === 2) return [l, tp + b.t * (bt - tp), 1, 0] // left
+  return [r, tp + b.t * (bt - tp), -1, 0]                  // right
 }
-function nearestPile(x, y) {
-  let best = piles[0], bd = 1e9
-  for (const p of piles) {
-    const [ax, ay] = pileAnchor(p.i)
+// nearest point on the world border to (x,y), as [edge, t]
+function toPerimeter(x, y) {
+  const [l, r, tp, bt] = wBounds()
+  const dl = x - l, dr = r - x, dtp = y - tp, dbt = bt - y
+  const m = Math.min(dl, dr, dtp, dbt)
+  const fx = (r - l) ? (x - l) / (r - l) : 0.5, fy = (bt - tp) ? (y - tp) / (bt - tp) : 0.5
+  if (m === dtp) return [0, fx]
+  if (m === dbt) return [1, fx]
+  if (m === dl) return [2, fy]
+  return [3, fy]
+}
+function nearestBlob(x, y) {
+  let best = null, bd = MERGE_DIST
+  for (const b of blobs) {
+    const [ax, ay] = blobPos(b)
     const d = Math.hypot(ax - x, ay - y)
-    if (d < bd) { bd = d; best = p }
+    if (d < bd) { bd = d; best = b }
   }
   return best
 }
-// a unicorn's remains join the nearest corner; the pile grows and mutates color
-function addHusk(x, y, hue) {
-  const p = nearestPile(x, y)
-  const [, , dx, dy] = pileAnchor(p.i)
-  // husks mound near the corner and only slowly creep inward — pow() biases most
-  // of them toward the corner, so it reads as a growing pile, not scattered confetti
-  const spread = (8 + Math.sqrt(p.count) * 6) * cfg.creep
-  p.husks.push({
-    ox: dx * (5 + Math.pow(Math.random(), 1.7) * spread),
-    oy: dy * (5 + Math.pow(Math.random(), 1.7) * spread),
+// a splash/death at (x,y): find or spawn the blob on the nearest border point, add
+// one husk, mutate + grow it, wake it if it crosses the threshold
+function addSplat(x, y, hue) {
+  let b = nearestBlob(x, y)
+  if (!b) {
+    if (blobs.length >= MAX_BLOBS) { // make room: drop the smallest
+      let mi = 0; for (let i = 1; i < blobs.length; i++) if (blobs[i].count < blobs[mi].count) mi = i
+      blobs.splice(mi, 1)
+    }
+    const [edge, t] = toPerimeter(x, y)
+    b = { edge, t, husks: [], count: 0, sup: false, hue, r: 0, pull: 0 }
+    blobs.push(b)
+  }
+  const [, , nx, ny] = blobPos(b)
+  const tx = -ny, ty = nx // tangent along the edge
+  const spread = (8 + Math.sqrt(b.count) * 6) * cfg.creep
+  const inward = 5 + Math.pow(Math.random(), 1.7) * spread
+  const along = (Math.random() - 0.5) * (20 + spread * 1.4)
+  b.husks.push({
+    ox: nx * inward + tx * along,
+    oy: ny * inward + ty * along,
     r: 4 + Math.random() * 5,
-    hue: p.sup ? p.hue : hue,
+    hue: b.sup ? b.hue : hue,
   })
-  if (p.husks.length > 70) p.husks.shift() // draw-list cap; count keeps climbing
-  p.count++
-  p.hue = (p.hue + 18 + Math.random() * 24) % 360 // replicate + change with each addition
-  p.r = 12 + Math.sqrt(p.count) * 7
-  if (!p.sup && p.count >= cfg.trigger) {
-    p.sup = true
-    elder('A pile in the corner has started to move on its own.')
+  if (b.husks.length > 70) b.husks.shift() // draw-list cap; count keeps climbing
+  b.count++
+  b.hue = (b.hue + 18 + Math.random() * 24) % 360 // replicate + change each addition
+  b.r = 12 + Math.sqrt(b.count) * 7
+  if (!b.sup && b.count >= cfg.trigger) {
+    b.sup = true
+    elder('A blot on the glass has started to move on its own.')
   }
 }
-// super piles pull the living in, eat them, and push the world outward
-function stepPiles(dt) {
+// a unicorn hitting the edge — leave a mark with a chance that scales with impact speed
+function splash(u, x, y) {
+  const sp = Math.hypot(u.vx, u.vy)
+  if (Math.random() < Math.min(0.9, sp * 0.15)) addSplat(x, y, u.hue)
+}
+// super blobs pull the living in, eat them, and push the world outward
+function stepBlobs(dt) {
   worldScaleTarget = 1
-  for (const p of piles) {
-    if (!p.sup) continue
-    const [ax, ay] = pileAnchor(p.i)
-    p.pull = Math.min(1, p.pull + dt * 0.0004)
-    const reach = p.r + 150
+  const n = blobs.length // snapshot: don't process blobs spawned this frame
+  for (let bi = 0; bi < n; bi++) {
+    const b = blobs[bi]
+    if (!b.sup) continue
+    const [ax, ay] = blobPos(b)
+    b.pull = Math.min(1, b.pull + dt * 0.0004)
+    const reach = b.r + 150
     for (const u of herd) {
       if (u.gone || u.delivered || u.sucked) continue
       const dx = ax - u.x, dy = ay - u.y
       const d = Math.hypot(dx, dy) || 1
       if (d < reach) {
-        const g = (1 - d / reach) * 0.006 * p.pull * dt * cfg.pull
+        const g = (1 - d / reach) * 0.006 * b.pull * dt * cfg.pull
         u.vx += (dx / d) * g
         u.vy += (dy / d) * g
       }
-      if (d < p.r + 10) { addHusk(u.x, u.y, u.hue); u.gone = true } // consumed
+      if (d < b.r + 10) { addSplat(u.x, u.y, u.hue); u.gone = true } // consumed
     }
-    worldScaleTarget += Math.min(1.2, p.r / (innerWidth * 0.5)) * 0.55
+    worldScaleTarget += Math.min(1.2, b.r / (innerWidth * 0.5)) * 0.55
   }
   if (worldScaleTarget > cfg.zcap) worldScaleTarget = cfg.zcap
 }
-function drawPiles(now) {
-  for (const p of piles) {
-    if (!p.count) continue
-    const [ax, ay] = pileAnchor(p.i)
+function drawBlobs(now) {
+  for (const b of blobs) {
+    const [ax, ay] = blobPos(b)
     ctx.save()
-    if (p.sup) {
-      // a solid, wobbling mass — the pile as a body claiming ground, not just glow
+    if (b.sup) {
+      // a solid, wobbling mass crusting the border, not just glow
       ctx.globalCompositeOperation = 'source-over'
-      ctx.fillStyle = `hsla(${p.hue | 0},68%,30%,0.72)`
+      ctx.fillStyle = `hsla(${b.hue | 0},68%,30%,0.72)`
       ctx.shadowBlur = 26
-      ctx.shadowColor = `hsla(${p.hue | 0},85%,48%,0.7)`
+      ctx.shadowColor = `hsla(${b.hue | 0},85%,48%,0.7)`
       ctx.beginPath()
       for (let k = 0; k <= 20; k++) {
         const a = (k / 20) * Math.PI * 2
-        const rr = p.r * (0.72 + 0.13 * Math.sin(a * 3 + now * 0.003 + p.i))
+        const rr = b.r * (0.72 + 0.13 * Math.sin(a * 3 + now * 0.003 + b.t * 9))
         const px = ax + Math.cos(a) * rr, py = ay + Math.sin(a) * rr
         k ? ctx.lineTo(px, py) : ctx.moveTo(px, py)
       }
       ctx.closePath(); ctx.fill()
       ctx.shadowBlur = 0
     }
-    // the husks themselves — a knotted cluster of colored blobs on the mass
+    // the husks themselves — a knotted cluster of colored blobs smeared on the glass
     ctx.globalCompositeOperation = 'lighter'
-    for (const h of p.husks) {
-      ctx.fillStyle = `hsla(${h.hue | 0},70%,${p.sup ? 58 : 46}%,${p.sup ? 0.75 : 0.5})`
-      ctx.shadowBlur = p.sup ? 10 : 4
+    for (const h of b.husks) {
+      ctx.fillStyle = `hsla(${h.hue | 0},70%,${b.sup ? 58 : 46}%,${b.sup ? 0.75 : 0.5})`
+      ctx.shadowBlur = b.sup ? 10 : 4
       ctx.shadowColor = `hsla(${h.hue | 0},80%,55%,0.6)`
       ctx.beginPath(); ctx.arc(ax + h.ox, ay + h.oy, h.r, 0, Math.PI * 2); ctx.fill()
     }
@@ -485,9 +527,13 @@ function stepHerd(dt, now) {
       if (u.suckT >= 1) {
         lostCount++
         spawnVoidPop(ex, ey)
-        addHusk(u.x, u.y, u.hue) // the remains drop into the nearest corner pile
-        u.gone = true            // topUpHerd() walks a stranger in to replace it
-        elder(`The eye took one. Its color pools in the corner. (${lostCount} taken)`)
+        addSplat(u.x, u.y, u.hue)   // remains smear onto the nearest edge of the glass
+        irisFlush = { hue: u.hue, t: 1 } // it digests the color: the iris flushes its hue
+        bloodshot = Math.min(1, bloodshot + 0.06) // and the eye reddens a little more
+        caps.push(genCap())         // a fresh vein bursts across the white
+        if (caps.length > 30) caps.shift()
+        u.gone = true               // topUpHerd() walks a stranger in to replace it
+        elder(`The eye took one. Its color bleeds into the glass. (${lostCount} taken)`)
       }
       continue
     }
@@ -527,11 +573,12 @@ function stepHerd(dt, now) {
     // brilliantly, stubbornly their own color
     u.hue += (sky.hue - u.hue) * 0.02 * (1 - u.wild)
 
-    // bounce softly off the (growing) world edges
-    if (u.x < wl) { u.x = wl; u.vx *= -1 }
-    if (u.x > wr) { u.x = wr; u.vx *= -1 }
-    if (u.y < wt) { u.y = wt; u.vy *= -1 }
-    if (u.y > wb) { u.y = wb; u.vy *= -1 }
+    // bounce off the (growing) world edges — and splash colored remains onto the
+    // glass where it hits, harder impacts more likely to leave a mark
+    if (u.x < wl) { u.x = wl; u.vx *= -1; splash(u, wl, u.y) }
+    if (u.x > wr) { u.x = wr; u.vx *= -1; splash(u, wr, u.y) }
+    if (u.y < wt) { u.y = wt; u.vy *= -1; splash(u, u.x, wt) }
+    if (u.y > wb) { u.y = wb; u.vy *= -1; splash(u, u.x, wb) }
 
     // wander into the eye's open pupil and it takes you — no warning beyond
     // the eye itself being there to see
@@ -787,47 +834,52 @@ function skyElderOpen(now) {
   // metronome — reads as an organic, slightly wrong tic instead of a timer
   const p = (now * 0.00011 + Math.sin(now * 0.00017) * 0.04) % 1
   const blink = p > 0.95 ? 1 - (p - 0.95) / 0.05 : 0
-  return Math.max(0.05, 1 - blink)
+  // erratic twitches — rare when calm, frequent and sharp the more bloodshot it gets
+  const tw = Math.sin(now * 0.013) * Math.sin(now * 0.0071 + 1.3)
+  const thr = 1 - bloodshot * 0.6
+  const twitch = tw > thr ? Math.min(0.8, (tw - thr) * 4) : 0
+  // a rare hard squeeze-shut
+  const squeeze = ((now * 0.00007) % 1) > 0.986 ? 1 : 0
+  return Math.max(0.05, 1 - blink - twitch - squeeze)
 }
 
 function drawSkyElder(now) {
-  const w = Math.min(innerWidth, innerHeight) * 0.6
+  const w = Math.min(innerWidth, innerHeight) * 0.72 // giant
   const [cx, cy] = skyElderPos(now)
   const pulse = elderPulse
-  const a = 0.1 + pulse * 0.4
   const openness = skyElderOpen(now)
+  const bs = bloodshot
+  const throb = 0.6 + 0.4 * Math.sin(heartPhase * Math.PI * 2) // beats with the heart
 
   ctx.save()
-  ctx.globalCompositeOperation = 'lighter'
 
-  // a solid sclera behind the outline — gives the shape real weight instead
-  // of reading as a bare wireframe
-  ctx.fillStyle = `hsla(4,20%,10%,${0.5 + pulse * 0.2})`
+  // --- the eyeball: a wet sclera drawn SOLID so the reds stay red. It floods from a
+  // pale veined white toward furious inflamed red as `bloodshot` climbs. ---
   ctx.beginPath()
   EYE_POINTS.forEach(([px, py], i) => {
     const x = cx + px * w, y = cy + py * w * 0.5 * openness
     if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y)
   })
   ctx.closePath()
+  const sg = ctx.createRadialGradient(cx, cy, 0, cx, cy, w)
+  sg.addColorStop(0, `hsla(6,${55 + bs * 35}%,${72 - bs * 20}%,0.93)`)
+  sg.addColorStop(0.55, `hsla(3,${65 + bs * 25}%,${52 - bs * 16}%,0.93)`)
+  sg.addColorStop(1, `hsla(1,${75 + bs * 20}%,${34 - bs * 10}%,0.95)`)
+  ctx.fillStyle = sg
   ctx.fill()
-  ctx.strokeStyle = `hsla(4,20%,85%,${a})`
-  ctx.lineWidth = 1.4
+  ctx.strokeStyle = `hsla(2,75%,${34 - bs * 12}%,0.85)`
+  ctx.lineWidth = 2
   ctx.stroke()
 
-  ctx.fillStyle = `hsla(4,25%,90%,${a * 1.5})`
-  for (const [px, py] of EYE_POINTS) {
-    ctx.beginPath()
-    ctx.arc(cx + px * w, cy + py * w * 0.5 * openness, 1.3, 0, Math.PI * 2)
-    ctx.fill()
-  }
+  // everything from here glows additively on top of the wet ball
+  ctx.globalCompositeOperation = 'lighter'
 
-  // seeded bloodshot capillaries reaching in from the inner corner — they wake up
-  // (brighter, redder) as the sky charges and the eye pulses. Generated once from
-  // the room seed, so everyone in the same room shares the same veined eye.
-  const capA = 0.07 + pulse * 0.3 + sky.charge * 0.28
-  ctx.lineWidth = 0.6
+  // --- bloodshot capillaries: more of them, thicker, redder, throbbing with the
+  // heart as it inflames. Seeded so a room shares them; kills push fresh veins in. ---
+  const capA = (0.12 + bs * 0.5 + pulse * 0.2) * (0.7 + throb * 0.3)
+  ctx.lineWidth = 0.6 + bs * 1.3
   for (const cap of caps) {
-    ctx.strokeStyle = `hsla(${2 + sky.charge * 6},70%,${44 + pulse * 22}%,${capA})`
+    ctx.strokeStyle = `hsla(${2 + bs * 4},85%,${46 + throb * 12}%,${capA})`
     ctx.beginPath()
     cap.forEach(([px, py], i) => {
       const x = cx + px * w, y = cy + py * w * 0.5 * openness
@@ -836,16 +888,29 @@ function drawSkyElder(now) {
     ctx.stroke()
   }
 
-  // how far the eyeball is turned toward whatever it's watching (your light, or the
-  // prey it just locked onto). Clamped so the pupil always stays inside the sclera.
+  // where the eyeball is turned — the pupil rides this toward your light or its prey
   const dx = gaze.x - cx, dy = gaze.y - cy
   const gx = Math.max(-1, Math.min(1, dx / (w * 0.9))) * w * 0.3
   const gy = Math.max(-1, Math.min(1, dy / (innerHeight * 0.5))) * w * 0.16 * openness
   const dil = pupilDilate
 
-  // iris ring + fibers — reptile-eye texture, mostly hidden by the shades except
-  // for a rim that glows through around them. Rides with the gaze.
-  ctx.strokeStyle = `hsla(30,70%,55%,${0.3 + pulse * 0.4})`
+  // veins reach for prey: when it's locked onto a unicorn, engorged veins strain
+  // from the pupil toward it, thickening as the pupil blows open
+  if (eyeTarget) {
+    ctx.strokeStyle = `hsla(2,88%,${46 + throb * 14}%,${0.28 + dil * 0.5})`
+    ctx.lineWidth = 1.2 + dil * 2.4
+    for (let i = 0; i < 4; i++) {
+      const j = (i - 1.5) * 0.05
+      ctx.beginPath()
+      ctx.moveTo(cx + gx * 0.15, cy + gy * 0.15)
+      ctx.quadraticCurveTo(cx + gx * 0.9 + j * w, cy + gy * 0.9, cx + gx * 1.7 + j * w * 1.3, cy + gy * 1.7)
+      ctx.stroke()
+    }
+  }
+
+  // iris fibers — amber, but they flush with the color of the last unicorn it ate
+  const iHue = irisFlush.t > 0 ? irisFlush.hue : 30
+  ctx.strokeStyle = `hsla(${iHue | 0},70%,55%,${0.3 + pulse * 0.4 + irisFlush.t * 0.5})`
   ctx.lineWidth = 1
   ctx.save()
   ctx.translate(cx + gx, cy + gy)
@@ -859,29 +924,38 @@ function drawSkyElder(now) {
     ctx.lineTo(Math.cos(ang) * irisR, Math.sin(ang) * irisR)
     ctx.stroke()
   }
+  // the digested-color flush: a ring of the swallowed hue, fading
+  if (irisFlush.t > 0) {
+    ctx.strokeStyle = `hsla(${irisFlush.hue | 0},90%,60%,${irisFlush.t * 0.7})`
+    ctx.lineWidth = 1.5
+    ctx.beginPath(); ctx.arc(0, 0, irisR * 0.8, 0, Math.PI * 2); ctx.stroke()
+  }
   ctx.restore()
 
-  // the pupil itself — a reptilian slit that blows wide open (dil) when it's near
-  // you or has locked prey, and clamps back to a needle when it's idle
-  ctx.shadowBlur = 20 + dil * 30 + pulse * 40
-  ctx.shadowColor = `hsla(4,75%,55%,${0.45 + pulse * 0.55})`
-  ctx.fillStyle = `hsla(4,65%,60%,${0.3 + pulse * 0.65})`
+  // the pupil — a burning red iris around an actual dark slit hole, blown wide open
+  // when it's near you or hunting. The hole is drawn SOLID so it reads as a void.
   ctx.save()
   ctx.translate(cx + gx, cy + gy)
   ctx.scale(1, openness)
-  ctx.beginPath()
-  ctx.ellipse(0, 0, 2.2 + dil * 4 + pulse * 2, 8 + dil * 3 + pulse * 6, 0, 0, Math.PI * 2)
-  ctx.fill()
-  // a wet specular glint high on the pupil — the "it's alive and looking at you" cue
-  ctx.shadowBlur = 0
-  ctx.fillStyle = `hsla(0,0%,100%,${0.45 + pulse * 0.35})`
-  ctx.beginPath()
-  ctx.ellipse(-1.6, -3.5, 1.2, 2, 0, 0, Math.PI * 2)
-  ctx.fill()
+  const pr = 2.4 + dil * 4 + pulse * 2, prv = 8 + dil * 3 + pulse * 6
+  // burning red glow around the slit (additive)
+  const pg = ctx.createRadialGradient(0, 0, 0, 0, 0, prv * 1.7)
+  pg.addColorStop(0, `hsla(4,90%,55%,${0.6 + pulse * 0.4})`)
+  pg.addColorStop(1, 'hsla(4,90%,50%,0)')
+  ctx.fillStyle = pg
+  ctx.beginPath(); ctx.arc(0, 0, prv * 1.7, 0, Math.PI * 2); ctx.fill()
+  // the slit itself — solid near-black, a hole in the eye
+  ctx.globalCompositeOperation = 'source-over'
+  ctx.fillStyle = 'hsla(0,60%,4%,0.98)'
+  ctx.beginPath(); ctx.ellipse(0, 0, pr, prv, 0, 0, Math.PI * 2); ctx.fill()
+  // a wet specular glint high on the slit
+  ctx.globalCompositeOperation = 'lighter'
+  ctx.fillStyle = `hsla(0,0%,100%,${0.5 + pulse * 0.35})`
+  ctx.beginPath(); ctx.ellipse(-pr * 0.5, -prv * 0.35, 1.2, 2, 0, 0, Math.PI * 2); ctx.fill()
   ctx.restore()
+  ctx.globalCompositeOperation = 'lighter'
 
-  // acid tears: sickly wet streaks weeping from the lower lid, brightening with each
-  // fresh drop. The eye doesn't only watch — it leaks, and the leak corrupts color.
+  // acid tears: sickly wet streaks weeping from the lower lid, brightening with each drop
   const tearA = 0.1 + weepGlow * 0.5
   const tg = ctx.createLinearGradient(cx, cy, cx, cy + w * 0.9)
   tg.addColorStop(0, `hsla(95,90%,62%,${tearA})`)
@@ -894,68 +968,24 @@ function drawSkyElder(now) {
   ctx.moveTo(cx + w * 0.05, cy + w * 0.14 * openness)
   ctx.quadraticCurveTo(cx + w * 0.085, cy + w * 0.5, cx + w * 0.06, cy + w * 0.8)
   ctx.stroke()
-  ctx.restore()
 
-  drawElderSwagger(cx, cy, w, openness)
-}
-
-// 90s-gangster flourishes, drawn in normal (non-additive) compositing so they
-// read as solid objects sitting in front of the glow rather than more light.
-// Shades mostly hide the eye — the pupil's glow still leaks out past the rims
-// — and a gold chain hangs below. Purely cosmetic; doesn't touch the hitbox.
-function drawElderSwagger(cx, cy, w, openness) {
-  ctx.save()
-  const lensW = w * 0.46, lensH = w * 0.22 * openness, lensDX = w * 0.32
-  // the darker the glasses, the less you see — but as the pupil dilates (it's
-  // hunting, or you're near) the lenses turn translucent and the eye's glow bleeds
-  // through the glass. You can see it looking at you.
-  const dil = pupilDilate
-  ctx.fillStyle = `rgba(8,6,12,${0.66 - dil * 0.24})`
-  ctx.beginPath()
-  ctx.ellipse(cx - lensDX, cy, lensW * 0.5, lensH * 0.5, 0, 0, Math.PI * 2)
-  ctx.ellipse(cx + lensDX, cy, lensW * 0.5, lensH * 0.5, 0, 0, Math.PI * 2)
-  ctx.fill()
-  ctx.fillRect(cx - w * 0.05, cy - 1.5, w * 0.1, 3) // bridge
-
-  // red glow leaking through each lens where the eye burns behind the glass
-  ctx.save()
-  ctx.globalCompositeOperation = 'lighter'
-  for (const sgn of [-1, 1]) {
-    const lx = cx + sgn * lensDX
-    const gg = ctx.createRadialGradient(lx, cy, 0, lx, cy, lensW * 0.5)
-    const gA = 0.14 + dil * 0.5 + elderPulse * 0.2
-    gg.addColorStop(0, `hsla(4,85%,55%,${gA})`)
-    gg.addColorStop(1, 'hsla(4,85%,55%,0)')
-    ctx.fillStyle = gg
+  // nictitating membrane: a pale film that wipes sideways across the eye now and then
+  if (memb > 0 && memb < 1) {
+    ctx.globalCompositeOperation = 'source-over'
+    ctx.save()
     ctx.beginPath()
-    ctx.ellipse(lx, cy, lensW * 0.5, lensH * 0.5, 0, 0, Math.PI * 2)
-    ctx.fill()
+    EYE_POINTS.forEach(([px, py], i) => {
+      const x = cx + px * w, y = cy + py * w * 0.5 * openness
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y)
+    })
+    ctx.closePath()
+    ctx.clip()
+    const ex = cx - w + memb * 2 * w
+    ctx.fillStyle = 'rgba(200,175,175,0.3)'
+    ctx.fillRect(cx - w, cy - w, ex - (cx - w), w * 2)
+    ctx.restore()
   }
-  ctx.restore()
 
-  // a thin rainbow streak across each lens — reflected light, not a light source
-  const hl = ctx.createLinearGradient(cx - w * 0.6, cy, cx + w * 0.6, cy)
-  for (let i = 0; i <= 6; i++) hl.addColorStop(i / 6, `hsla(${i * 60},90%,65%,0.4)`)
-  ctx.strokeStyle = hl
-  ctx.lineWidth = 1.4
-  ctx.beginPath()
-  ctx.moveTo(cx - lensDX - lensW * 0.4, cy - lensH * 0.12)
-  ctx.lineTo(cx - lensDX + lensW * 0.4, cy - lensH * 0.12)
-  ctx.moveTo(cx + lensDX - lensW * 0.4, cy - lensH * 0.12)
-  ctx.lineTo(cx + lensDX + lensW * 0.4, cy - lensH * 0.12)
-  ctx.stroke()
-
-  // gold chain, hanging below — pure swagger
-  ctx.fillStyle = 'hsla(46,85%,55%,0.55)'
-  const chainY = cy + w * 0.34
-  for (let i = -3; i <= 3; i++) {
-    ctx.beginPath()
-    ctx.arc(cx + i * w * 0.045, chainY + Math.abs(i) * w * 0.012, 1.6, 0, Math.PI * 2)
-    ctx.fill()
-  }
-  ctx.beginPath()
-  ctx.arc(cx, chainY + w * 0.05, 3.4, 0, Math.PI * 2)
-  ctx.fill()
   ctx.restore()
 }
 
@@ -1304,7 +1334,7 @@ function render(now) {
 
   drawStains()
   drawLures(now)
-  drawPiles(now)
+  drawBlobs(now)
   drawSkyElder(now)
   if (captionTimer > 0) drawElderCaption(now)
   drawTrail()
@@ -1357,7 +1387,7 @@ function loop(t) {
   }
 
   stepHerd(dt, t)
-  stepPiles(dt)
+  stepBlobs(dt)
   stepAcid(dt, t)
   topUpHerd() // the moment one dies or crosses home, another walks in
   // ease the world's growth and the camera zoom that trails it
@@ -1382,6 +1412,15 @@ function loop(t) {
     : 0
   const want = Math.max(near, eyeTarget ? 0.9 : 0)
   pupilDilate += (want - pupilDilate) * 0.08
+
+  // the eye inflames the whole time it watches, and only ebbs a hair — it remembers
+  bloodshot = Math.min(1, Math.max(0, bloodshot + dt * (0.000008 * cfg.rot - 0.0000005)))
+  // a visual heartbeat sharing the audio heartbeat's quickening tempo (throbs the veins)
+  heartPhase = (heartPhase + dt * 0.001 / Math.max(0.4, 1.6 - pupilDilate * 1.1)) % 1
+  irisFlush.t = Math.max(0, irisFlush.t - dt * 0.0016)
+  // nictitating membrane: sweep across now and then, more often the more inflamed
+  if (memb > 0) { memb += dt * 0.0026; if (memb >= 1) { memb = 0; membT = 4000 + Math.random() * 9000 } }
+  else { membT -= dt * (1 + bloodshot); if (membT <= 0) memb = 0.0001 }
 
   // dark eyes: spawn one on a random timer, age the rest out
   nextEyeT -= dt
@@ -1437,6 +1476,7 @@ const TUNABLES = [
   ['weep', 'acid weeping', 0, 3, 0.05],
   ['creep', 'pile creep', 0, 3, 0.05],
   ['zcap', 'zoom-out', 1, 4, 0.05],
+  ['rot', 'bloodshot rate', 0, 4, 0.05],
   ['vrate', 'voice speed', 0.2, 1, 0.02],
   ['vpitch', 'voice pitch', 0, 1, 0.02],
   ['grit', 'voice grit', 0, 1, 0.05],
