@@ -605,16 +605,19 @@ function noiseHit(t, dur, freq, gain) {
 // "gravel" comes from three things: pick the deepest voice available, run it slow
 // and low, and lay a synthesized growl + vinyl crackle underneath (those we CAN
 // build in Web Audio). Voices load async, so re-pick whenever the list changes.
-let theVoice = null
+let theVoice = null, voiceList = [], voicePinned = false, voiceSelectRefresh = null
 function loadVoices() {
   try {
-    const vs = speechSynthesis.getVoices() || []
-    if (!vs.length) return
-    const en = vs.filter((v) => /^en/i.test(v.lang))
-    const pool = en.length ? en : vs
-    // known deep / gruff male voices first, then anything flagged male, then default
-    const pref = ['ralph', 'fred', 'lee', 'bruce', 'albert', 'arthur', 'daniel', 'reed', 'rocko', 'eddy', 'aaron', 'male']
-    theVoice = pool.find((v) => pref.some((p) => v.name.toLowerCase().includes(p))) || pool[0]
+    voiceList = speechSynthesis.getVoices() || []
+    if (!voiceList.length) return
+    if (!voicePinned) {
+      const en = voiceList.filter((v) => /^en/i.test(v.lang))
+      const pool = en.length ? en : voiceList
+      // known deep / gruff male voices first, then anything flagged male, then default
+      const pref = ['ralph', 'fred', 'lee', 'bruce', 'albert', 'arthur', 'daniel', 'reed', 'rocko', 'eddy', 'aaron', 'male']
+      theVoice = pool.find((v) => pref.some((p) => v.name.toLowerCase().includes(p))) || pool[0]
+    }
+    if (voiceSelectRefresh) voiceSelectRefresh() // keep the dropdown in sync
   } catch (e) { /* ignore */ }
 }
 if (window.speechSynthesis) { loadVoices(); speechSynthesis.onvoiceschanged = loadVoices }
@@ -1447,6 +1450,7 @@ function buildPanel() {
     '#uip label{display:grid;grid-template-columns:1fr auto;gap:1px 6px;margin:8px 0 0}' +
     '#uip b{color:#b39cf2;font-weight:600}' +
     '#uip input{grid-column:1/3;width:100%;accent-color:#a06cf0;margin:2px 0 0}' +
+    '#uip select{grid-column:1/3;width:100%;margin:3px 0 0;background:rgba(10,8,20,.7);color:#cfc8e8;border:1px solid rgba(233,230,247,.2);border-radius:4px;font:inherit;padding:2px}' +
     '#uip .r{width:100%;margin-top:10px}'
   document.head.append(style)
 
@@ -1471,8 +1475,36 @@ function buildPanel() {
     row.append(cap, val, s); panel.append(row)
     setters.push(() => { s.value = cfg[key]; show() })
   }
+
+  // voice picker — choose any installed voice directly. Value is the true index
+  // into voiceList; english voices are floated to the top for convenience.
+  const vrow = document.createElement('label')
+  const vcap = document.createElement('span'); vcap.textContent = 'voice'
+  const sel = document.createElement('select')
+  const fillVoices = () => {
+    sel.innerHTML = ''
+    const order = [...voiceList.keys()].sort((a, b) => {
+      const ea = /^en/i.test(voiceList[a].lang), eb = /^en/i.test(voiceList[b].lang)
+      return ea === eb ? 0 : ea ? -1 : 1
+    })
+    for (const i of order) {
+      const v = voiceList[i]
+      const o = document.createElement('option')
+      o.value = i; o.textContent = `${v.name} (${v.lang})`
+      if (v === theVoice) o.selected = true
+      sel.append(o)
+    }
+  }
+  sel.onchange = () => { theVoice = voiceList[+sel.value]; voicePinned = true }
+  voiceSelectRefresh = fillVoices
+  fillVoices()
+  vrow.append(vcap, sel); panel.append(vrow)
+
   const reset = document.createElement('button'); reset.textContent = 'reset'; reset.className = 'r'
-  reset.onclick = () => { Object.assign(cfg, DEFAULTS); for (const f of setters) f() }
+  reset.onclick = () => {
+    Object.assign(cfg, DEFAULTS); for (const f of setters) f()
+    voicePinned = false; loadVoices() // re-pick the auto voice and refresh the dropdown
+  }
   panel.append(reset)
 
   box.append(gear, panel); document.body.append(box)
