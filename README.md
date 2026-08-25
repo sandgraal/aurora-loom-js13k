@@ -35,12 +35,25 @@ WebSocket directly instead — the protocol is simple enough that a wrapper
 isn't needed yet — but if reconnect/backoff handling becomes worth it later,
 that import is free.
 
+## Build & submit
+
+```
+npm run build
+```
+
+Bundles `src/main.js` (+ `src/net.js`), inlines the minified result into a single
+**self-contained** `dist/index.html` (no external fonts, CDNs, or services — per
+the rules), zips it with `zip -9`, and **fails if the zip exceeds 13,312 bytes**.
+Current output: `dist/aurora-loom.zip` ≈ **7.5 KB**. `dist/` and `*.zip` are
+gitignored — submit the zip plus this public source repo.
+
 ## Structure
 
 ```
-index.html          entry point, canvas + minimal log overlay
-src/main.js          game loop: drag-light input, boid herd, rendering, scoring
+index.html          dev entry point (ES modules, for `npm run dev`)
+src/main.js          game loop: input, herd, the watching eye, procedural sky, audio
 src/net.js           relay connection, offline-safe by construction
+build.mjs            bundle + inline + zip + 13KB size gate (`npm run build`)
 spike/relay-spike.mjs         standalone protocol test (2 clients, no game code)
 spike/net-integration-test.mjs  same test through the real src/net.js module
 package.json          npm run dev / build / spike / spike:net

@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "npx --yes http-server -p 8080 .",
-    "build": "npx --yes esbuild src/main.js --bundle --minify --format=esm --outfile=dist/bundle.js",
+    "build": "node build.mjs",
     "spike": "node spike/relay-spike.mjs",
     "spike:net": "node spike/net-integration-test.mjs"
   }

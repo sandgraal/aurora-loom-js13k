@@ -13,6 +13,55 @@ function resize() {
 addEventListener('resize', resize)
 resize()
 
+// ---------- deterministic per-room world ----------
+// One seed for everyone in the same relay room, so the stars, the nebula bands,
+// the eye's bloodshot capillaries and the starting palette are unique-but-shared:
+// two people in the same room see the same sky; a different room is a different
+// sky. Pure generation from a string — no stored assets, and it costs a handful
+// of bytes. mulberry32 + a cheap string hash.
+const ROOM = todaysRoom()
+function strSeed(s) {
+  let h = 1779033703 ^ s.length
+  for (let i = 0; i < s.length; i++) { h = Math.imul(h ^ s.charCodeAt(i), 3432918353); h = h << 13 | h >>> 19 }
+  return h >>> 0
+}
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0
+    let t = Math.imul(a ^ a >>> 15, 1 | a)
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t
+    return ((t ^ t >>> 14) >>> 0) / 4294967296
+  }
+}
+const rng = mulberry32(strSeed(ROOM))
+// starfield: positions as viewport fractions so they survive resize
+const stars = Array.from({ length: 150 }, () => ({
+  x: rng(), y: rng() * 0.95, r: 0.4 + rng() * 1.4, tw: rng() * 6.28, sp: 0.5 + rng() * 2.2,
+}))
+// a few slow nebula bands, each with its own drift and hue
+const bands = Array.from({ length: 3 }, () => ({
+  hue: rng() * 360, y: 0.12 + rng() * 0.6, amp: 0.05 + rng() * 0.1,
+  ph: rng() * 6.28, sp: 0.00002 + rng() * 0.00004,
+}))
+// the eye's capillaries — a seeded jittered walk out from the inner corner, in
+// eye-local space (roughly -1..1 x, -0.5..0.5 y). Generated once so they stay put.
+function genCap() {
+  const pts = []
+  let x = -0.9 + rng() * 0.12, y = (rng() - 0.5) * 0.12, ang = rng() * 0.8 - 0.4
+  const steps = 4 + (rng() * 5 | 0)
+  for (let i = 0; i < steps; i++) {
+    pts.push([x, y])
+    ang += (rng() - 0.5) * 0.9
+    const st = 0.12 + rng() * 0.1
+    x += Math.cos(ang) * st; y += Math.sin(ang) * st * 0.5
+  }
+  return pts
+}
+const caps = Array.from({ length: 6 + (rng() * 6 | 0) }, genCap)
+// small eyes that open in the dark, blink once, and are gone (cosmetic, no hitbox)
+const darkEyes = []
+let nextEyeT = 2600 + rng() * 5000
+
 // ---------- shared "sky" state ----------
 // charge: how lit-up the shared sky is right now (0..1), decays on its own.
 // hue: the sky's current color, drifts toward whoever's actively adding charge.
@@ -21,7 +70,7 @@ resize()
 // server-side store (see net.js) — this is pure "whoever's here right now"
 // ambient state, which is also why it resets to calm whenever a room empties:
 // the sky itself is as ephemeral as the rainbows it's made of.
-const sky = { charge: 0.08, hue: 200 }
+const sky = { charge: 0.08, hue: rng() * 360 | 0 }
 let peerCount = 0
 const elderLog = []
 // The Sky Elder is a real presence, not just a log: a faint watching eye drawn
@@ -32,6 +81,14 @@ const elderLog = []
 // footnote; here it's the whole point: something is watching you build this,
 // and can only ever watch.
 let elderPulse = 0
+// where the eye is looking (eased toward your light) and how blown-open its pupil
+// is (rises when you're near it, or when it's locked onto prey). This is the part
+// that flips it from "aloof decoration" to "it is watching you". Visual only — it
+// never touches the shared sky, so the Online-layer "watch but never touch" framing
+// still holds.
+const gaze = { x: innerWidth / 2, y: innerHeight * 0.2 }
+let pupilDilate = 0
+let eyeTarget = null
 function elder(msg) {
   elderLog.unshift(`${new Date().toLocaleTimeString()}  ${msg}`)
   elderLog.length = 6
@@ -128,6 +185,21 @@ function spawnVoidPop(x, y) {
 }
 
 function stepHerd(dt, now) {
+  // The eye notices the nearest unicorn before it strikes — the pupil locks on and
+  // dilates for a beat of dread, instead of the old no-warning grab. eyeTarget is
+  // read by the render loop (gaze snap + dilation) and reset each frame.
+  eyeTarget = null
+  if (skyElderOpen(now) > 0.3) {
+    const [ex, ey] = skyElderPos(now)
+    let best = null, bd = 1e9
+    for (const u of herd) {
+      if (u.delivered || u.gone || u.sucked) continue
+      const d = Math.hypot(ex - u.x, ey - u.y)
+      if (d < bd) { bd = d; best = u }
+    }
+    if (best && bd < 130) eyeTarget = best
+  }
+
   for (const u of herd) {
     if (u.delivered || u.gone) continue
 
@@ -215,11 +287,11 @@ function stepHerd(dt, now) {
 // down for the drawl, and always shown as text too — TTS voices (and this
 // preview sandbox specifically) aren't guaranteed to be available everywhere.
 const RAP_LINES = [
-  "yo... it's the eye up in the sky, watchin' errrybody...",
-  "got a herd of unicorns, each one born with a horn,",
-  "draggin' colors 'cross the dark 'til the break of dawn,",
-  "slow with the flow, baby, watch me glow,",
-  "get too close to me though... and — pop — you go.",
+  "i am the eye... i never close, i never look away...",
+  "i counted every color that you dragged today,",
+  "the little warm ones come to me... they don't come back,",
+  "keep painting all your pretty rainbows on the black,",
+  "i see you... yeah, i see you... i'll be here when you're gone.",
 ]
 let lyricIdx = -1
 let currentLine = ''
@@ -258,13 +330,70 @@ function noiseHit(t, dur, freq, gain) {
 function speak(line) {
   try {
     if (!window.speechSynthesis) return
+    // one deep, slow voice — and a second quieter, slightly slower layer under it.
+    // The two drifting out of sync is the "wrong", doubled, not-quite-human sound.
     const u = new SpeechSynthesisUtterance(line)
-    u.rate = 0.72; u.pitch = 0.35; u.volume = 0.9
+    u.rate = 0.6; u.pitch = 0.18; u.volume = 0.9
     speechSynthesis.speak(u)
+    const w = new SpeechSynthesisUtterance(line)
+    w.rate = 0.48; w.pitch = 0.06; w.volume = 0.45
+    speechSynthesis.speak(w)
   } catch (e) { /* speech synthesis unavailable — captions still show */ }
 }
 
-const VERSE_BPM = 76, VERSE_STEP = 60 / VERSE_BPM / 2
+// A low detuned drone bed under the verse — two saws a hair apart through a
+// slow-swept lowpass. Started with the verse, faded out when it ends. Pure
+// synthesis; if there's no AudioContext this is simply silent.
+let droneNodes = null
+function droneStart() {
+  if (!actx || droneNodes) return
+  const g = actx.createGain(); g.gain.value = 0.0001; g.connect(actx.destination)
+  g.gain.setTargetAtTime(0.05, actx.currentTime, 1.5)
+  const o1 = actx.createOscillator(); o1.type = 'sawtooth'; o1.frequency.value = 55
+  const o2 = actx.createOscillator(); o2.type = 'sawtooth'; o2.frequency.value = 55 * 1.008
+  const f = actx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 210
+  const lfo = actx.createOscillator(); lfo.frequency.value = 0.07
+  const lg = actx.createGain(); lg.gain.value = 90; lfo.connect(lg); lg.connect(f.frequency)
+  o1.connect(f); o2.connect(f); f.connect(g)
+  o1.start(); o2.start(); lfo.start()
+  droneNodes = { g, o1, o2, lfo }
+}
+function droneStop() {
+  if (!droneNodes) return
+  const { g, o1, o2, lfo } = droneNodes
+  try {
+    g.gain.setTargetAtTime(0.0001, actx.currentTime, 0.6)
+    o1.stop(actx.currentTime + 1.2); o2.stop(actx.currentTime + 1.2); lfo.stop(actx.currentTime + 1.2)
+  } catch (e) { /* ignore */ }
+  droneNodes = null
+}
+
+// A soft double heartbeat whose tempo climbs as the eye's pupil blows open /
+// locks a target: calm ~1.6s apart, hunting ~0.5s. Starts once audio exists
+// (after the first drag gesture) and quietly runs under everything.
+function thump(t, vol) {
+  const o = actx.createOscillator(), g = actx.createGain()
+  o.frequency.setValueAtTime(70, t)
+  o.frequency.exponentialRampToValueAtTime(30, t + 0.14)
+  g.gain.setValueAtTime(vol, t)
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.2)
+  o.connect(g); g.connect(actx.destination)
+  o.start(t); o.stop(t + 0.22)
+}
+let hbStarted = false, hbNext = 0
+function heartbeat() {
+  if (!actx) return
+  const now = actx.currentTime
+  if (hbNext < now + 0.1) {
+    const vol = 0.16 + pupilDilate * 0.5
+    thump(now + 0.02, vol)
+    thump(now + 0.16, vol * 0.6)
+    hbNext = now + (1.6 - pupilDilate * 1.1)
+  }
+  requestAnimationFrame(heartbeat)
+}
+
+const VERSE_BPM = 64, VERSE_STEP = 60 / VERSE_BPM / 2
 const VERSE_PATTERN = [1, 0, 0, 0, 0, 0, 1, 0] // boom ... bap, boom-boom ... bap
 let verseOn = false, nextStep = 0, stepIdx = 0, lastVerseAt = -Infinity
 function scheduleVerse() {
@@ -283,7 +412,7 @@ function scheduleVerse() {
     }
     nextStep += VERSE_STEP
     stepIdx++
-    if (stepIdx >= RAP_LINES.length * 8) { verseOn = false; return }
+    if (stepIdx >= RAP_LINES.length * 8) { verseOn = false; droneStop(); return }
   }
   requestAnimationFrame(scheduleVerse)
 }
@@ -295,6 +424,8 @@ function startVerse() {
   lastVerseAt = t
   ensureAudio()
   if (!actx) return
+  droneStart()
+  if (!hbStarted) { hbStarted = true; hbNext = actx.currentTime; heartbeat() }
   verseOn = true
   stepIdx = 0
   nextStep = actx.currentTime + 0.05
@@ -357,45 +488,62 @@ function drawSkyElder(now) {
     ctx.fill()
   }
 
-  // faint veins from the inner corner — a small, unsettling "this has been
-  // open a long time" detail
-  ctx.strokeStyle = `hsla(4,60%,60%,${0.12 + pulse * 0.25})`
+  // seeded bloodshot capillaries reaching in from the inner corner — they wake up
+  // (brighter, redder) as the sky charges and the eye pulses. Generated once from
+  // the room seed, so everyone in the same room shares the same veined eye.
+  const capA = 0.07 + pulse * 0.3 + sky.charge * 0.28
   ctx.lineWidth = 0.6
-  for (let i = 0; i < 3; i++) {
+  for (const cap of caps) {
+    ctx.strokeStyle = `hsla(${2 + sky.charge * 6},70%,${44 + pulse * 22}%,${capA})`
     ctx.beginPath()
-    ctx.moveTo(cx - w * 0.94, cy)
-    ctx.quadraticCurveTo(
-      cx - w * 0.5, cy + (i - 1) * w * 0.06 * openness,
-      cx - w * 0.15, cy + (i - 1) * w * 0.14 * openness
-    )
+    cap.forEach(([px, py], i) => {
+      const x = cx + px * w, y = cy + py * w * 0.5 * openness
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y)
+    })
     ctx.stroke()
   }
 
-  // a thin iris ring — reptile-eye texture, mostly hidden by the shades
-  // except for a rim that glows through around them
+  // how far the eyeball is turned toward whatever it's watching (your light, or the
+  // prey it just locked onto). Clamped so the pupil always stays inside the sclera.
+  const dx = gaze.x - cx, dy = gaze.y - cy
+  const gx = Math.max(-1, Math.min(1, dx / (w * 0.9))) * w * 0.3
+  const gy = Math.max(-1, Math.min(1, dy / (innerHeight * 0.5))) * w * 0.16 * openness
+  const dil = pupilDilate
+
+  // iris ring + fibers — reptile-eye texture, mostly hidden by the shades except
+  // for a rim that glows through around them. Rides with the gaze.
   ctx.strokeStyle = `hsla(30,70%,55%,${0.3 + pulse * 0.4})`
   ctx.lineWidth = 1
   ctx.save()
-  ctx.translate(cx, cy)
+  ctx.translate(cx + gx, cy + gy)
   ctx.scale(1, openness)
-  for (let i = 0; i < 8; i++) {
-    const ang = (i / 8) * Math.PI * 2
+  const irisR = 9 + dil * 5 + pulse * 4
+  for (let i = 0; i < 14; i++) {
+    const ang = (i / 14) * Math.PI * 2
+    const r0 = 5 + (i % 2) * 1.5
     ctx.beginPath()
-    ctx.moveTo(Math.cos(ang) * 5, Math.sin(ang) * 5)
-    ctx.lineTo(Math.cos(ang) * (9 + pulse * 4), Math.sin(ang) * (9 + pulse * 4))
+    ctx.moveTo(Math.cos(ang) * r0, Math.sin(ang) * r0)
+    ctx.lineTo(Math.cos(ang) * irisR, Math.sin(ang) * irisR)
     ctx.stroke()
   }
   ctx.restore()
 
-  // the pupil itself — a narrow reptilian slit, not a soft dot
-  ctx.shadowBlur = 20 + pulse * 50
+  // the pupil itself — a reptilian slit that blows wide open (dil) when it's near
+  // you or has locked prey, and clamps back to a needle when it's idle
+  ctx.shadowBlur = 20 + dil * 30 + pulse * 40
   ctx.shadowColor = `hsla(4,75%,55%,${0.45 + pulse * 0.55})`
   ctx.fillStyle = `hsla(4,65%,60%,${0.3 + pulse * 0.65})`
   ctx.save()
-  ctx.translate(cx, cy)
+  ctx.translate(cx + gx, cy + gy)
   ctx.scale(1, openness)
   ctx.beginPath()
-  ctx.ellipse(0, 0, 2.4 + pulse * 3, 8 + pulse * 7, 0, 0, Math.PI * 2)
+  ctx.ellipse(0, 0, 2.2 + dil * 4 + pulse * 2, 8 + dil * 3 + pulse * 6, 0, 0, Math.PI * 2)
+  ctx.fill()
+  // a wet specular glint high on the pupil — the "it's alive and looking at you" cue
+  ctx.shadowBlur = 0
+  ctx.fillStyle = `hsla(0,0%,100%,${0.45 + pulse * 0.35})`
+  ctx.beginPath()
+  ctx.ellipse(-1.6, -3.5, 1.2, 2, 0, 0, Math.PI * 2)
   ctx.fill()
   ctx.restore()
   ctx.restore()
@@ -410,12 +558,32 @@ function drawSkyElder(now) {
 function drawElderSwagger(cx, cy, w, openness) {
   ctx.save()
   const lensW = w * 0.46, lensH = w * 0.22 * openness, lensDX = w * 0.32
-  ctx.fillStyle = 'rgba(8,6,12,0.92)'
+  // the darker the glasses, the less you see — but as the pupil dilates (it's
+  // hunting, or you're near) the lenses turn translucent and the eye's glow bleeds
+  // through the glass. You can see it looking at you.
+  const dil = pupilDilate
+  ctx.fillStyle = `rgba(8,6,12,${0.66 - dil * 0.24})`
   ctx.beginPath()
   ctx.ellipse(cx - lensDX, cy, lensW * 0.5, lensH * 0.5, 0, 0, Math.PI * 2)
   ctx.ellipse(cx + lensDX, cy, lensW * 0.5, lensH * 0.5, 0, 0, Math.PI * 2)
   ctx.fill()
   ctx.fillRect(cx - w * 0.05, cy - 1.5, w * 0.1, 3) // bridge
+
+  // red glow leaking through each lens where the eye burns behind the glass
+  ctx.save()
+  ctx.globalCompositeOperation = 'lighter'
+  for (const sgn of [-1, 1]) {
+    const lx = cx + sgn * lensDX
+    const gg = ctx.createRadialGradient(lx, cy, 0, lx, cy, lensW * 0.5)
+    const gA = 0.14 + dil * 0.5 + elderPulse * 0.2
+    gg.addColorStop(0, `hsla(4,85%,55%,${gA})`)
+    gg.addColorStop(1, 'hsla(4,85%,55%,0)')
+    ctx.fillStyle = gg
+    ctx.beginPath()
+    ctx.ellipse(lx, cy, lensW * 0.5, lensH * 0.5, 0, 0, Math.PI * 2)
+    ctx.fill()
+  }
+  ctx.restore()
 
   // a thin rainbow streak across each lens — reflected light, not a light source
   const hl = ctx.createLinearGradient(cx - w * 0.6, cy, cx + w * 0.6, cy)
@@ -690,10 +858,87 @@ function drawUnicorn(u) {
   ctx.restore()
 }
 
-// ---------- render ----------
-function render(now) {
+// Procedural night sky, all from the room seed: a base fill, a few slow drifting
+// nebula bands, and a twinkling starfield. Replaces the old flat background — the
+// depth is what makes the dark feel like it has something in it.
+function drawSky(now) {
   ctx.fillStyle = '#05040a'
   ctx.fillRect(0, 0, innerWidth, innerHeight)
+  ctx.save()
+  ctx.globalCompositeOperation = 'lighter'
+  for (const b of bands) {
+    const yy = innerHeight * b.y + Math.sin(now * b.sp + b.ph) * innerHeight * 0.03
+    const h = innerHeight * b.amp * 2
+    const g = ctx.createLinearGradient(0, yy - h, 0, yy + h)
+    g.addColorStop(0, 'hsla(0,0%,0%,0)')
+    g.addColorStop(0.5, `hsla(${b.hue | 0},70%,55%,0.06)`)
+    g.addColorStop(1, 'hsla(0,0%,0%,0)')
+    ctx.fillStyle = g
+    ctx.fillRect(0, yy - h, innerWidth, h * 2)
+  }
+  for (const s of stars) {
+    const tw = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(now * 0.001 * s.sp + s.tw))
+    ctx.globalAlpha = tw
+    ctx.fillStyle = `hsla(${(sky.hue + 200) % 360},30%,${72 + tw * 22}%,1)`
+    ctx.beginPath()
+    ctx.arc(s.x * innerWidth, s.y * innerHeight, s.r * tw, 0, Math.PI * 2)
+    ctx.fill()
+  }
+  ctx.restore()
+  ctx.globalAlpha = 1
+}
+
+// Small eyes that open in the dark, look at you, blink once, and are gone. Purely
+// cosmetic (no hitbox) — the point is the half-second where you're not sure you
+// saw it. Spawned on a random timer in the loop.
+function drawDarkEyes() {
+  ctx.save()
+  ctx.globalCompositeOperation = 'lighter'
+  for (const e of darkEyes) {
+    const p = e.t / 2600 // 0..1 lifetime
+    let open = Math.min(1, p / 0.15) * (1 - Math.max(0, (p - 0.85) / 0.15))
+    if (p > 0.55 && p < 0.68) open *= Math.abs((p - 0.615) / 0.065) // quick blink dip
+    open = Math.max(0, open)
+    const a = open * 0.55
+    if (a <= 0.01) continue
+    const w = e.s
+    ctx.strokeStyle = `hsla(4,30%,82%,${a})`
+    ctx.lineWidth = 1
+    ctx.beginPath()
+    ctx.ellipse(e.x, e.y, w, w * 0.5 * open, 0, 0, Math.PI * 2)
+    ctx.stroke()
+    // pupil turned toward where you're looking
+    const ox = Math.max(-1, Math.min(1, (gaze.x - e.x) / (w * 3))) * w * 0.4
+    const oy = Math.max(-1, Math.min(1, (gaze.y - e.y) / (w * 3))) * w * 0.2 * open
+    ctx.fillStyle = `hsla(4,72%,60%,${a * 1.4})`
+    ctx.shadowBlur = 8
+    ctx.shadowColor = 'hsla(4,80%,55%,0.6)'
+    ctx.beginPath()
+    ctx.ellipse(e.x + ox, e.y + oy, w * 0.16, w * 0.42 * open, 0, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.shadowBlur = 0
+  }
+  ctx.restore()
+}
+
+// A breathing vignette — the edges of the frame slowly close in and ease back,
+// like the dark is inhaling. Drawn under the HUD so the text stays readable.
+function drawVignette(now) {
+  const breath = 0.5 + 0.5 * Math.sin(now * 0.0004)
+  const g = ctx.createRadialGradient(
+    innerWidth / 2, innerHeight * 0.46, innerHeight * 0.2,
+    innerWidth / 2, innerHeight * 0.5, Math.max(innerWidth, innerHeight) * 0.72
+  )
+  g.addColorStop(0, 'hsla(0,0%,0%,0)')
+  g.addColorStop(1, `hsla(260,35%,2%,${0.5 + breath * 0.18})`)
+  ctx.fillStyle = g
+  ctx.fillRect(0, 0, innerWidth, innerHeight)
+}
+
+// ---------- render ----------
+function render(now) {
+  drawSky(now)
+  drawDarkEyes()
 
   drawSkyElder(now)
   if (captionTimer > 0) drawElderCaption(now)
@@ -716,6 +961,8 @@ function render(now) {
 
   for (const u of herd) if (!u.gone) drawUnicorn(u)
   drawParticles()
+
+  drawVignette(now)
 
   // HUD
   ctx.fillStyle = 'rgba(255,255,255,0.6)'
@@ -756,6 +1003,36 @@ function loop(t) {
   }
 
   stepHerd(dt, t)
+
+  // where the eye looks: snap toward locked prey, else ease toward your light, else
+  // drift idly. The ease is what makes it feel like a heavy eyeball turning, not a
+  // cursor teleporting.
+  const [ex, ey] = skyElderPos(t)
+  let tx, ty, ease
+  if (eyeTarget) { tx = eyeTarget.x; ty = eyeTarget.y; ease = 0.16 }
+  else if (light.active) { tx = light.x; ty = light.y; ease = 0.06 }
+  else { tx = innerWidth * 0.5 + Math.sin(t * 0.0003) * innerWidth * 0.3; ty = innerHeight * 0.5 + Math.cos(t * 0.00023) * innerHeight * 0.2; ease = 0.02 }
+  gaze.x += (tx - gaze.x) * ease
+  gaze.y += (ty - gaze.y) * ease
+
+  // pupil blows open when you're near the eye or it has locked prey, clamps back otherwise
+  const near = light.active
+    ? Math.max(0, 1 - Math.hypot(light.x - ex, light.y - ey) / (Math.min(innerWidth, innerHeight) * 0.45))
+    : 0
+  const want = Math.max(near, eyeTarget ? 0.9 : 0)
+  pupilDilate += (want - pupilDilate) * 0.08
+
+  // dark eyes: spawn one on a random timer, age the rest out
+  nextEyeT -= dt
+  if (nextEyeT <= 0) {
+    nextEyeT = 4000 + Math.random() * 9000
+    darkEyes.push({ x: Math.random() * innerWidth, y: innerHeight * (0.3 + Math.random() * 0.6), s: 7 + Math.random() * 11, t: 0 })
+  }
+  for (let i = darkEyes.length - 1; i >= 0; i--) {
+    darkEyes[i].t += dt
+    if (darkEyes[i].t > 2600) darkEyes.splice(i, 1)
+  }
+
   render(t)
   requestAnimationFrame(loop)
 }
@@ -770,7 +1047,7 @@ function broadcastThrottled() {
   net.send({ t: 'sky', charge: sky.charge, hue: sky.hue })
 }
 
-const net = connectRelay(todaysRoom(), {
+const net = connectRelay(ROOM, {
   onId: () => elder('Connected to today\'s sky.'),
   onPeerJoin: (id) => { peerCount++; elder(`A rider joined (${id.slice(0, 6)}). ${peerCount} here now.`) },
   onPeerLeave: (id) => { peerCount = Math.max(0, peerCount - 1); elder(`A rider left (${id.slice(0, 6)}). ${peerCount} here now.`) },
