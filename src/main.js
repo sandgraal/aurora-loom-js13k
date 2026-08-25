@@ -4,14 +4,29 @@ import { connectRelay, todaysRoom } from './net.js'
 const canvas = document.getElementById('c')
 const ctx = canvas.getContext('2d')
 const logEl = document.getElementById('log')
-let W, H
+let W, H, CX, CY
 function resize() {
   W = canvas.width = innerWidth * devicePixelRatio
   H = canvas.height = innerHeight * devicePixelRatio
   ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0)
+  CX = innerWidth / 2; CY = innerHeight / 2
 }
 addEventListener('resize', resize)
 resize()
+
+// ---------- world / camera ----------
+// The playfield is a world centered on the screen. As the super-piles gain
+// ground it GROWS (worldScale climbs) and the camera zooms out to keep it framed,
+// so the corruption visibly claims territory you used to own. Everything in the
+// simulation lives in world coords; only the sky, vignette and HUD are drawn in
+// raw screen space. worldScale eases toward a target set by pile pressure.
+let worldScale = 1, worldScaleTarget = 1, zoom = 1
+function wBounds() {
+  const HW = (innerWidth / 2) * worldScale, HH = (innerHeight / 2) * worldScale
+  return [CX - HW, CX + HW, CY - HH, CY + HH]
+}
+// screen pixel -> world coord (input lands where you actually clicked, at any zoom)
+function toWorld(px, py) { return { x: CX + (px - CX) / zoom, y: CY + (py - CY) / zoom } }
 
 // ---------- deterministic per-room world ----------
 // One seed for everyone in the same relay room, so the stars, the nebula bands,
@@ -100,7 +115,7 @@ function elder(msg) {
 const light = { x: innerWidth / 2, y: innerHeight / 2, active: false }
 function pointerPos(e) {
   const t = e.touches ? e.touches[0] : e
-  return { x: t.clientX, y: t.clientY }
+  return toWorld(t.clientX, t.clientY)
 }
 function onDown(e) { light.active = true; Object.assign(light, pointerPos(e)); startVerse() }
 function onMove(e) { if (light.active) Object.assign(light, pointerPos(e)) }
@@ -119,7 +134,10 @@ addEventListener('touchmove', (e) => { onMove(e); e.preventDefault() }, { passiv
 addEventListener('touchend', onUp)
 
 // ---------- herd (boid-lite) ----------
-const N_UNICORNS = 6
+// Never fewer than this many unicorns present. Every death (to the eye, or to a
+// super-pile) is topped up the same frame from a fresh spawn at the world's edge,
+// so the sky is never empty — they just keep coming, each one stranger.
+const MIN_UNICORNS = 8
 
 // every unicorn is a little stranger than the last one — brighter body hue,
 // its own secondary marking color, a scatter of spots at fixed spawn-time
@@ -144,10 +162,243 @@ function spawnUnicorn(x, y) {
     ]),
   }
 }
-const herd = Array.from({ length: N_UNICORNS }, () =>
+const herd = Array.from({ length: MIN_UNICORNS + 1 }, () =>
   spawnUnicorn(Math.random() * innerWidth, Math.random() * innerHeight))
 let deliveredCount = 0
 let lostCount = 0
+
+// how many unicorns are actually on the board (not gone, not already delivered)
+function liveCount() {
+  let n = 0
+  for (const u of herd) if (!u.gone && !u.delivered) n++
+  return n
+}
+// spawn fresh ones at the world edge until we're back to the floor. Called every
+// frame — the moment one dies or crosses home, another walks in from the dark.
+function topUpHerd() {
+  let guard = 0
+  while (liveCount() < MIN_UNICORNS && guard++ < 20) {
+    const [wl, wr, wt, wb] = wBounds()
+    const edge = Math.random()
+    const x = edge < 0.5 ? wl + 8 : wr - 8
+    const y = wt + 20 + Math.random() * (wb - wt - 40)
+    // reuse a gone slot if there is one, else grow the array
+    const slot = herd.find((u) => u.gone)
+    const born = spawnUnicorn(x, y)
+    if (slot) Object.assign(slot, born); else herd.push(born)
+  }
+}
+
+// ---------- lures: abstract symbols the herd drifts toward on its own ----------
+// The unicorns want something even when you aren't dragging. Two abstract glyphs
+// pull on them: a pale cross (call it a bible) that calms whatever nears it, and a
+// dark inward-curving twin-horn (call it a devil) that agitates. Deliberately
+// abstract — bars and curves of light, not icons. Seeded so a room shares them.
+const lures = [
+  { type: 0, x: innerWidth * (0.18 + rng() * 0.16), y: innerHeight * (0.32 + rng() * 0.32), ph: rng() * 6.28 },
+  { type: 1, x: innerWidth * (0.64 + rng() * 0.16), y: innerHeight * (0.32 + rng() * 0.32), ph: rng() * 6.28 },
+]
+function nearestLure(x, y) {
+  let best = null, bd = 1e9
+  for (const L of lures) { const d = Math.hypot(L.x - x, L.y - y); if (d < bd) { bd = d; best = L } }
+  return [best, bd]
+}
+function drawLures(now) {
+  for (const L of lures) {
+    const pulse = 0.5 + 0.5 * Math.sin(now * 0.0016 + L.ph)
+    ctx.save()
+    ctx.globalCompositeOperation = 'lighter'
+    ctx.translate(L.x, L.y)
+    if (L.type === 0) {
+      // a cross of pale light — the calm one
+      ctx.strokeStyle = `hsla(48,55%,88%,${0.2 + pulse * 0.18})`
+      ctx.lineWidth = 2.2
+      ctx.shadowBlur = 16 + pulse * 14
+      ctx.shadowColor = 'hsla(48,80%,80%,0.7)'
+      ctx.beginPath()
+      ctx.moveTo(0, -16); ctx.lineTo(0, 16)
+      ctx.moveTo(-9, -6); ctx.lineTo(9, -6)
+      ctx.stroke()
+    } else {
+      // two inward-curving horns — the agitating one
+      ctx.strokeStyle = `hsla(${350 + pulse * 12},80%,60%,${0.2 + pulse * 0.2})`
+      ctx.lineWidth = 2.4
+      ctx.shadowBlur = 16 + pulse * 16
+      ctx.shadowColor = 'hsla(356,85%,55%,0.7)'
+      for (const s of [-1, 1]) {
+        ctx.beginPath()
+        ctx.moveTo(s * 3, 13)
+        ctx.quadraticCurveTo(s * 15, 2, s * 9, -16)
+        ctx.stroke()
+      }
+    }
+    ctx.restore()
+  }
+}
+
+// ---------- corner piles ----------
+// Where the dead pile up. Four corners; each accumulates "husks" — the leftover
+// color of eaten unicorns. Past a threshold a corner turns into a SUPER pile: it
+// takes on a mutating color, reaches out and drags living unicorns in to consume
+// them, and every meal makes it grow and spread further inward — claiming ground.
+const PILE_TRIGGER = 8
+const piles = [0, 1, 2, 3].map((i) => ({
+  i, husks: [], count: 0, sup: false, hue: rng() * 360, r: 0, pull: 0,
+}))
+// world corner + inward unit direction for pile i (0=TL,1=TR,2=BL,3=BR)
+function pileAnchor(i) {
+  const [l, r, tp, bt] = wBounds()
+  return [(i & 1) ? r : l, (i & 2) ? bt : tp, (i & 1) ? -1 : 1, (i & 2) ? -1 : 1]
+}
+function nearestPile(x, y) {
+  let best = piles[0], bd = 1e9
+  for (const p of piles) {
+    const [ax, ay] = pileAnchor(p.i)
+    const d = Math.hypot(ax - x, ay - y)
+    if (d < bd) { bd = d; best = p }
+  }
+  return best
+}
+// a unicorn's remains join the nearest corner; the pile grows and mutates color
+function addHusk(x, y, hue) {
+  const p = nearestPile(x, y)
+  const [, , dx, dy] = pileAnchor(p.i)
+  // husks mound near the corner and only slowly creep inward — pow() biases most
+  // of them toward the corner, so it reads as a growing pile, not scattered confetti
+  const spread = 8 + Math.sqrt(p.count) * 6
+  p.husks.push({
+    ox: dx * (5 + Math.pow(Math.random(), 1.7) * spread),
+    oy: dy * (5 + Math.pow(Math.random(), 1.7) * spread),
+    r: 4 + Math.random() * 5,
+    hue: p.sup ? p.hue : hue,
+  })
+  if (p.husks.length > 70) p.husks.shift() // draw-list cap; count keeps climbing
+  p.count++
+  p.hue = (p.hue + 18 + Math.random() * 24) % 360 // replicate + change with each addition
+  p.r = 12 + Math.sqrt(p.count) * 7
+  if (!p.sup && p.count >= PILE_TRIGGER) {
+    p.sup = true
+    elder('A pile in the corner has started to move on its own.')
+  }
+}
+// super piles pull the living in, eat them, and push the world outward
+function stepPiles(dt) {
+  worldScaleTarget = 1
+  for (const p of piles) {
+    if (!p.sup) continue
+    const [ax, ay] = pileAnchor(p.i)
+    p.pull = Math.min(1, p.pull + dt * 0.0004)
+    const reach = p.r + 150
+    for (const u of herd) {
+      if (u.gone || u.delivered || u.sucked) continue
+      const dx = ax - u.x, dy = ay - u.y
+      const d = Math.hypot(dx, dy) || 1
+      if (d < reach) {
+        const g = (1 - d / reach) * 0.006 * p.pull * dt
+        u.vx += (dx / d) * g
+        u.vy += (dy / d) * g
+      }
+      if (d < p.r + 10) { addHusk(u.x, u.y, u.hue); u.gone = true } // consumed
+    }
+    worldScaleTarget += Math.min(1.2, p.r / (innerWidth * 0.5)) * 0.55
+  }
+  if (worldScaleTarget > 2.4) worldScaleTarget = 2.4
+}
+function drawPiles(now) {
+  for (const p of piles) {
+    if (!p.count) continue
+    const [ax, ay] = pileAnchor(p.i)
+    ctx.save()
+    if (p.sup) {
+      // a solid, wobbling mass — the pile as a body claiming ground, not just glow
+      ctx.globalCompositeOperation = 'source-over'
+      ctx.fillStyle = `hsla(${p.hue | 0},68%,30%,0.72)`
+      ctx.shadowBlur = 26
+      ctx.shadowColor = `hsla(${p.hue | 0},85%,48%,0.7)`
+      ctx.beginPath()
+      for (let k = 0; k <= 20; k++) {
+        const a = (k / 20) * Math.PI * 2
+        const rr = p.r * (0.72 + 0.13 * Math.sin(a * 3 + now * 0.003 + p.i))
+        const px = ax + Math.cos(a) * rr, py = ay + Math.sin(a) * rr
+        k ? ctx.lineTo(px, py) : ctx.moveTo(px, py)
+      }
+      ctx.closePath(); ctx.fill()
+      ctx.shadowBlur = 0
+    }
+    // the husks themselves — a knotted cluster of colored blobs on the mass
+    ctx.globalCompositeOperation = 'lighter'
+    for (const h of p.husks) {
+      ctx.fillStyle = `hsla(${h.hue | 0},70%,${p.sup ? 58 : 46}%,${p.sup ? 0.75 : 0.5})`
+      ctx.shadowBlur = p.sup ? 10 : 4
+      ctx.shadowColor = `hsla(${h.hue | 0},80%,55%,0.6)`
+      ctx.beginPath(); ctx.arc(ax + h.ox, ay + h.oy, h.r, 0, Math.PI * 2); ctx.fill()
+    }
+    ctx.restore()
+  }
+}
+
+// ---------- the eye weeps acid ----------
+// Sickly tears fall from the pupil; where one lands it leaves a stain that bleeds
+// its color into everything underneath — the sky discolors, and any unicorn caught
+// in a stain has its own hue dragged toward the rot.
+const acid = []
+const stains = []
+let weepT = 700, weepGlow = 0
+function stepAcid(dt, now) {
+  const [ex, ey] = skyElderPos(now)
+  weepT -= dt
+  weepGlow = Math.max(0, weepGlow - dt * 0.0006)
+  if (weepT <= 0) {
+    weepT = 500 + Math.random() * 1400 - pupilDilate * 300 // weeps faster when agitated
+    weepGlow = 1
+    acid.push({ x: ex + (Math.random() - 0.5) * 12, y: ey + 6, vy: 0.02 + Math.random() * 0.03, hue: 70 + Math.random() * 70 })
+  }
+  const [, , , wb] = wBounds()
+  for (let i = acid.length - 1; i >= 0; i--) {
+    const a = acid[i]
+    a.vy += dt * 0.00012
+    a.y += a.vy * dt
+    if (a.y >= wb - 4 || Math.random() < 0.005) {
+      stains.push({ x: a.x, y: a.y, r: 6, mr: 24 + Math.random() * 44, hue: a.hue, age: 0 })
+      if (stains.length > 90) stains.shift()
+      acid.splice(i, 1)
+    }
+  }
+  for (const s of stains) {
+    s.age += dt
+    if (s.r < s.mr) s.r += dt * 0.02
+    for (const u of herd) {
+      if (u.gone) continue
+      if (Math.hypot(u.x - s.x, u.y - s.y) < s.r) {
+        u.hue = (u.hue + (((s.hue - u.hue + 540) % 360) - 180) * 0.02 + 360) % 360
+      }
+    }
+  }
+}
+function drawStains() {
+  ctx.save()
+  ctx.globalCompositeOperation = 'overlay' // bleed color into whatever's beneath
+  for (const s of stains) {
+    const a = Math.max(0, 0.62 - s.age * 0.000016)
+    if (a <= 0.01) continue
+    const gg = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, s.r)
+    gg.addColorStop(0, `hsla(${s.hue | 0},90%,50%,${a})`)
+    gg.addColorStop(1, `hsla(${s.hue | 0},90%,50%,0)`)
+    ctx.fillStyle = gg
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.fill()
+  }
+  ctx.restore()
+}
+function drawAcid() {
+  ctx.save()
+  ctx.globalCompositeOperation = 'lighter'
+  for (const a of acid) {
+    ctx.fillStyle = `hsla(${a.hue | 0},90%,55%,0.85)`
+    ctx.shadowBlur = 8; ctx.shadowColor = `hsla(${a.hue | 0},90%,50%,0.8)`
+    ctx.beginPath(); ctx.ellipse(a.x, a.y, 2.2, 3.6, 0, 0, Math.PI * 2); ctx.fill()
+  }
+  ctx.restore()
+}
 
 // fading rainbow ribbon behind the drag — the "paint" feedback for the light cursor
 const trail = []
@@ -185,6 +436,7 @@ function spawnVoidPop(x, y) {
 }
 
 function stepHerd(dt, now) {
+  const [wl, wr, wt, wb] = wBounds()
   // The eye notices the nearest unicorn before it strikes — the pupil locks on and
   // dilates for a beat of dread, instead of the old no-warning grab. eyeTarget is
   // read by the render loop (gaze snap + dilation) and reset each frame.
@@ -214,13 +466,9 @@ function stepHerd(dt, now) {
       if (u.suckT >= 1) {
         lostCount++
         spawnVoidPop(ex, ey)
-        // it doesn't come back — a new, stranger one does. The eye is a
-        // hazard, not a dead end: losing one to it recolors the herd rather
-        // than shrinking it for good.
-        const nx = Math.random() * innerWidth, ny = Math.random() * innerHeight
-        Object.assign(u, spawnUnicorn(nx, ny))
-        spawnDeliveryBurst(nx, ny)
-        elder(`The eye took one... and something stranger climbed out of the dark. (${lostCount} so far)`)
+        addHusk(u.x, u.y, u.hue) // the remains drop into the nearest corner pile
+        u.gone = true            // topUpHerd() walks a stranger in to replace it
+        elder(`The eye took one. Its color pools in the corner. (${lostCount} taken)`)
       }
       continue
     }
@@ -233,6 +481,15 @@ function stepHerd(dt, now) {
       const pull = Math.min(0.6, sky.charge) * 0.08
       u.vx += (dx / d) * pull
       u.vy += (dy / d) * pull
+    }
+    // a faint pull toward the nearest symbol — the herd wanders to it on its own,
+    // even with the light off. The cross calms them; the horns agitate and hurry.
+    const [L, ld] = nearestLure(u.x, u.y)
+    if (L && ld > 1) {
+      const lp = L.type ? 0.02 : 0.013
+      u.vx += ((L.x - u.x) / ld) * lp
+      u.vy += ((L.y - u.y) / ld) * lp
+      if (ld < 80) { const k = L.type ? 1.012 : 0.985; u.vx *= k; u.vy *= k }
     }
     // gentle flocking: pull toward herd centroid, avoid crowding
     let cx = 0, cy = 0, n = 0
@@ -251,11 +508,11 @@ function stepHerd(dt, now) {
     // brilliantly, stubbornly their own color
     u.hue += (sky.hue - u.hue) * 0.02 * (1 - u.wild)
 
-    // wrap/bounce softly off edges
-    if (u.x < 0) { u.x = 0; u.vx *= -1 }
-    if (u.x > innerWidth) { u.x = innerWidth; u.vx *= -1 }
-    if (u.y < 0) { u.y = 0; u.vy *= -1 }
-    if (u.y > innerHeight) { u.y = innerHeight; u.vy *= -1 }
+    // bounce softly off the (growing) world edges
+    if (u.x < wl) { u.x = wl; u.vx *= -1 }
+    if (u.x > wr) { u.x = wr; u.vx *= -1 }
+    if (u.y < wt) { u.y = wt; u.vy *= -1 }
+    if (u.y > wb) { u.y = wb; u.vy *= -1 }
 
     // wander into the eye's open pupil and it takes you — no warning beyond
     // the eye itself being there to see
@@ -268,14 +525,13 @@ function stepHerd(dt, now) {
       }
     }
 
-    // "the valley" — reaching the right edge with enough charge delivers the unicorn
-    if (u.x > innerWidth - 24 && sky.charge > 0.5) {
-      u.delivered = true
+    // "the valley" — reaching the right edge with enough charge delivers the unicorn.
+    // It leaves the board (topUpHerd walks another in), so the count never drops.
+    if (u.x > wr - 24 && sky.charge > 0.5) {
       deliveredCount++
       spawnDeliveryBurst(u.x, u.y)
-      elder(deliveredCount === N_UNICORNS
-        ? 'The whole herd has crossed. The sky goes quiet again.'
-        : `A unicorn reached the valley. ${deliveredCount}/${N_UNICORNS} home.`)
+      u.gone = true
+      elder(`A unicorn slipped across to the valley. ${deliveredCount} have made it.`)
     }
   }
 }
@@ -444,9 +700,11 @@ const EYE_POINTS = [
 // where the eye's pupil actually is right now, and how open it is — shared
 // with stepHerd so "wander too close" checks the same point that's drawn
 function skyElderPos(now) {
+  const [l, r, tp, bt] = wBounds()
+  const spanW = r - l, spanH = bt - tp
   return [
-    innerWidth * 0.5 + Math.sin(now * 0.00006) * innerWidth * 0.18,
-    innerHeight * 0.2 + Math.cos(now * 0.00004) * innerHeight * 0.05,
+    (l + r) / 2 + Math.sin(now * 0.00006) * spanW * 0.18,
+    tp + spanH * 0.2 + Math.cos(now * 0.00004) * spanH * 0.05,
   ]
 }
 function skyElderOpen(now) {
@@ -546,6 +804,21 @@ function drawSkyElder(now) {
   ctx.ellipse(-1.6, -3.5, 1.2, 2, 0, 0, Math.PI * 2)
   ctx.fill()
   ctx.restore()
+
+  // acid tears: sickly wet streaks weeping from the lower lid, brightening with each
+  // fresh drop. The eye doesn't only watch — it leaks, and the leak corrupts color.
+  const tearA = 0.1 + weepGlow * 0.5
+  const tg = ctx.createLinearGradient(cx, cy, cx, cy + w * 0.9)
+  tg.addColorStop(0, `hsla(95,90%,62%,${tearA})`)
+  tg.addColorStop(1, 'hsla(115,90%,45%,0)')
+  ctx.strokeStyle = tg
+  ctx.lineWidth = 1.6 + weepGlow * 2.2
+  ctx.beginPath()
+  ctx.moveTo(cx - w * 0.05, cy + w * 0.14 * openness)
+  ctx.quadraticCurveTo(cx - w * 0.02, cy + w * 0.5, cx - w * 0.05, cy + w * 0.85)
+  ctx.moveTo(cx + w * 0.05, cy + w * 0.14 * openness)
+  ctx.quadraticCurveTo(cx + w * 0.085, cy + w * 0.5, cx + w * 0.06, cy + w * 0.8)
+  ctx.stroke()
   ctx.restore()
 
   drawElderSwagger(cx, cy, w, openness)
@@ -937,15 +1210,10 @@ function drawVignette(now) {
 
 // ---------- render ----------
 function render(now) {
+  // --- screen-space background: fills the viewport at any zoom ---
   drawSky(now)
   drawDarkEyes()
-
-  drawSkyElder(now)
-  if (captionTimer > 0) drawElderCaption(now)
-
-  // ambient sky wash — this is where OTHER players' contributions become visible:
-  // sky.hue/charge are nudged by remote deltas too, so the wash shifts even if
-  // you personally haven't touched anything in a moment.
+  // ambient eye-glow wash — remote players' contributions show up here too
   const g = ctx.createRadialGradient(
     innerWidth / 2, innerHeight * 0.2, 0,
     innerWidth / 2, innerHeight * 0.2, Math.max(innerWidth, innerHeight) * 0.8
@@ -955,20 +1223,31 @@ function render(now) {
   ctx.fillStyle = g
   ctx.fillRect(0, 0, innerWidth, innerHeight)
 
+  // --- the world, under the camera (zooms out as the piles claim ground) ---
+  ctx.save()
+  ctx.translate(CX, CY); ctx.scale(zoom, zoom); ctx.translate(-CX, -CY)
+
+  drawStains()
+  drawLures(now)
+  drawPiles(now)
+  drawSkyElder(now)
+  if (captionTimer > 0) drawElderCaption(now)
   drawTrail()
   drawTendrils(now)
   drawLightOrb(now)
-
   for (const u of herd) if (!u.gone) drawUnicorn(u)
+  drawAcid()
   drawParticles()
 
-  drawVignette(now)
+  ctx.restore()
 
-  // HUD
+  // --- screen overlays ---
+  drawVignette(now)
   ctx.fillStyle = 'rgba(255,255,255,0.6)'
   ctx.font = '13px monospace'
-  const lost = lostCount ? `   lost: ${lostCount}` : ''
-  ctx.fillText(`sky charge ${(sky.charge * 100 | 0)}%   peers: ${peerCount}   home: ${deliveredCount}/${N_UNICORNS}${lost}`, 10, 20)
+  ctx.fillText(
+    `charge ${(sky.charge * 100 | 0)}%   peers ${peerCount}   alive ${liveCount()}   home ${deliveredCount}   taken ${lostCount}`,
+    10, 20)
 }
 
 // ---------- loop ----------
@@ -1003,21 +1282,28 @@ function loop(t) {
   }
 
   stepHerd(dt, t)
+  stepPiles(dt)
+  stepAcid(dt, t)
+  topUpHerd() // the moment one dies or crosses home, another walks in
+  // ease the world's growth and the camera zoom that trails it
+  worldScale += (worldScaleTarget - worldScale) * 0.02
+  zoom = 1 / worldScale
 
   // where the eye looks: snap toward locked prey, else ease toward your light, else
   // drift idly. The ease is what makes it feel like a heavy eyeball turning, not a
   // cursor teleporting.
   const [ex, ey] = skyElderPos(t)
+  const [wl, wr, wt, wb] = wBounds()
   let tx, ty, ease
   if (eyeTarget) { tx = eyeTarget.x; ty = eyeTarget.y; ease = 0.16 }
   else if (light.active) { tx = light.x; ty = light.y; ease = 0.06 }
-  else { tx = innerWidth * 0.5 + Math.sin(t * 0.0003) * innerWidth * 0.3; ty = innerHeight * 0.5 + Math.cos(t * 0.00023) * innerHeight * 0.2; ease = 0.02 }
+  else { tx = (wl + wr) / 2 + Math.sin(t * 0.0003) * (wr - wl) * 0.3; ty = (wt + wb) / 2 + Math.cos(t * 0.00023) * (wb - wt) * 0.2; ease = 0.02 }
   gaze.x += (tx - gaze.x) * ease
   gaze.y += (ty - gaze.y) * ease
 
   // pupil blows open when you're near the eye or it has locked prey, clamps back otherwise
   const near = light.active
-    ? Math.max(0, 1 - Math.hypot(light.x - ex, light.y - ey) / (Math.min(innerWidth, innerHeight) * 0.45))
+    ? Math.max(0, 1 - Math.hypot(light.x - ex, light.y - ey) / (Math.min(innerWidth, innerHeight) * 0.45 * worldScale))
     : 0
   const want = Math.max(near, eyeTarget ? 0.9 : 0)
   pupilDilate += (want - pupilDilate) * 0.08
