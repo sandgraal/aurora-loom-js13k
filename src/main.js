@@ -40,6 +40,9 @@ const DEFAULTS = {
   weep: 1,     // how often the eye weeps acid
   creep: 1,    // how far piles spread inward as they grow
   zcap: 2.4,   // how far the world is allowed to zoom out
+  vrate: 0.46, // the eye's voice: speed (low = slow drawl)
+  vpitch: 0.15,// the eye's voice: pitch (low = deep/gravelly)
+  grit: 0.6,   // gravel under the voice: growl + vinyl-crackle amount
 }
 const cfg = { ...DEFAULTS }
 
@@ -565,7 +568,6 @@ const RAP_LINES = [
   "keep painting all your pretty rainbows on the black,",
   "i see you... yeah, i see you... i'll be here when you're gone.",
 ]
-let lyricIdx = -1
 let currentLine = ''
 let captionTimer = 0
 let actx = null
@@ -599,18 +601,52 @@ function noiseHit(t, dur, freq, gain) {
   src.connect(filt); filt.connect(g); g.connect(actx.destination)
   src.start(t)
 }
+// The browser's speech API only exposes voice/rate/pitch (no distortion), so the
+// "gravel" comes from three things: pick the deepest voice available, run it slow
+// and low, and lay a synthesized growl + vinyl crackle underneath (those we CAN
+// build in Web Audio). Voices load async, so re-pick whenever the list changes.
+let theVoice = null
+function loadVoices() {
+  try {
+    const vs = speechSynthesis.getVoices() || []
+    if (!vs.length) return
+    const en = vs.filter((v) => /^en/i.test(v.lang))
+    const pool = en.length ? en : vs
+    // known deep / gruff male voices first, then anything flagged male, then default
+    const pref = ['ralph', 'fred', 'lee', 'bruce', 'albert', 'arthur', 'daniel', 'reed', 'rocko', 'eddy', 'aaron', 'male']
+    theVoice = pool.find((v) => pref.some((p) => v.name.toLowerCase().includes(p))) || pool[0]
+  } catch (e) { /* ignore */ }
+}
+if (window.speechSynthesis) { loadVoices(); speechSynthesis.onvoiceschanged = loadVoices }
+
 function speak(line) {
   try {
     if (!window.speechSynthesis) return
-    // one deep, slow voice — and a second quieter, slightly slower layer under it.
-    // The two drifting out of sync is the "wrong", doubled, not-quite-human sound.
     const u = new SpeechSynthesisUtterance(line)
-    u.rate = 0.6; u.pitch = 0.18; u.volume = 0.9
+    if (theVoice) u.voice = theVoice
+    u.rate = cfg.vrate   // slow, dragging drawl
+    u.pitch = cfg.vpitch // deep and gravelly
+    u.volume = 1
     speechSynthesis.speak(u)
-    const w = new SpeechSynthesisUtterance(line)
-    w.rate = 0.48; w.pitch = 0.06; w.volume = 0.45
-    speechSynthesis.speak(w)
   } catch (e) { /* speech synthesis unavailable — captions still show */ }
+}
+
+// A short gravelly rasp fired under each spoken line — two detuned low waves
+// through a lowpass, quick swell and decay. It doesn't track syllables; it just
+// adds grit on the downbeat where the voice lands. Scaled by cfg.grit.
+function growl(t) {
+  if (!actx || cfg.grit <= 0) return
+  const o1 = actx.createOscillator(), o2 = actx.createOscillator()
+  const f = actx.createBiquadFilter(), g = actx.createGain()
+  o1.type = 'sawtooth'; o2.type = 'square'
+  o1.frequency.value = 64; o2.frequency.value = 64 * 1.5
+  f.type = 'lowpass'; f.frequency.value = 520
+  const peak = 0.16 * cfg.grit
+  g.gain.setValueAtTime(0.0001, t)
+  g.gain.exponentialRampToValueAtTime(peak, t + 0.06)
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.55)
+  o1.connect(f); o2.connect(f); f.connect(g); g.connect(actx.destination)
+  o1.start(t); o2.start(t); o1.stop(t + 0.6); o2.stop(t + 0.6)
 }
 
 // A low detuned drone bed under the verse — two saws a hair apart through a
@@ -628,14 +664,26 @@ function droneStart() {
   const lg = actx.createGain(); lg.gain.value = 90; lfo.connect(lg); lg.connect(f.frequency)
   o1.connect(f); o2.connect(f); f.connect(g)
   o1.start(); o2.start(); lfo.start()
-  droneNodes = { g, o1, o2, lfo }
+  // vinyl crackle: a looped buffer of sparse pops through a highpass — the dusty
+  // old-tape hiss that says "90s". Volume rides cfg.grit.
+  const len = actx.sampleRate * 2 | 0
+  const buf = actx.createBuffer(1, len, actx.sampleRate)
+  const d = buf.getChannelData(0)
+  for (let i = 0; i < len; i++) d[i] = Math.random() < 0.0009 ? (Math.random() * 2 - 1) : 0
+  const cr = actx.createBufferSource(); cr.buffer = buf; cr.loop = true
+  const crf = actx.createBiquadFilter(); crf.type = 'highpass'; crf.frequency.value = 1600
+  const crg = actx.createGain(); crg.gain.value = 0.0001
+  crg.gain.setTargetAtTime(0.28 * cfg.grit, actx.currentTime, 1)
+  cr.connect(crf); crf.connect(crg); crg.connect(actx.destination); cr.start()
+  droneNodes = { g, o1, o2, lfo, cr }
 }
 function droneStop() {
   if (!droneNodes) return
-  const { g, o1, o2, lfo } = droneNodes
+  const { g, o1, o2, lfo, cr } = droneNodes
   try {
     g.gain.setTargetAtTime(0.0001, actx.currentTime, 0.6)
     o1.stop(actx.currentTime + 1.2); o2.stop(actx.currentTime + 1.2); lfo.stop(actx.currentTime + 1.2)
+    cr.stop(actx.currentTime + 1.2)
   } catch (e) { /* ignore */ }
   droneNodes = null
 }
@@ -665,9 +713,9 @@ function heartbeat() {
   requestAnimationFrame(heartbeat)
 }
 
-const VERSE_BPM = 64, VERSE_STEP = 60 / VERSE_BPM / 2
+const VERSE_BPM = 60, VERSE_STEP = 60 / VERSE_BPM / 2
 const VERSE_PATTERN = [1, 0, 0, 0, 0, 0, 1, 0] // boom ... bap, boom-boom ... bap
-let verseOn = false, nextStep = 0, stepIdx = 0, lastVerseAt = -Infinity
+let verseOn = false, nextStep = 0, stepIdx = 0, verseLines = 0, lastVerseAt = -Infinity
 function scheduleVerse() {
   if (!verseOn) return
   while (nextStep < actx.currentTime + 0.15) {
@@ -675,16 +723,23 @@ function scheduleVerse() {
     if (VERSE_PATTERN[idx]) kick(nextStep)
     if (idx === 4) noiseHit(nextStep, 0.15, 1500, 0.5) // snare
     if (idx % 2 === 1) noiseHit(nextStep, 0.05, 6000, 0.2) // hat
-    if (idx === 0) {
-      lyricIdx = (lyricIdx + 1) % RAP_LINES.length
-      currentLine = RAP_LINES[lyricIdx]
+    // start a bar's line only once the voice has finished the last one, so a slow
+    // gravelly delivery never piles up or gets clipped — bars between ride the beat.
+    if (idx === 0 && verseLines < RAP_LINES.length &&
+        (!window.speechSynthesis || !speechSynthesis.speaking)) {
+      currentLine = RAP_LINES[verseLines]
+      verseLines++
       captionTimer = 1
       elder(currentLine)
       speak(currentLine)
+      growl(nextStep)
     }
     nextStep += VERSE_STEP
     stepIdx++
-    if (stepIdx >= RAP_LINES.length * 8) { verseOn = false; droneStop(); return }
+    // end once every line has been spoken and the voice has fallen silent
+    if (verseLines >= RAP_LINES.length &&
+        (!window.speechSynthesis || !speechSynthesis.speaking)) { verseOn = false; droneStop(); return }
+    if (stepIdx > RAP_LINES.length * 24) { verseOn = false; droneStop(); return } // safety
   }
   requestAnimationFrame(scheduleVerse)
 }
@@ -700,6 +755,7 @@ function startVerse() {
   if (!hbStarted) { hbStarted = true; hbNext = actx.currentTime; heartbeat() }
   verseOn = true
   stepIdx = 0
+  verseLines = 0
   nextStep = actx.currentTime + 0.05
   scheduleVerse()
 }
@@ -1378,13 +1434,16 @@ const TUNABLES = [
   ['weep', 'acid weeping', 0, 3, 0.05],
   ['creep', 'pile creep', 0, 3, 0.05],
   ['zcap', 'zoom-out', 1, 4, 0.05],
+  ['vrate', 'voice speed', 0.2, 1, 0.02],
+  ['vpitch', 'voice pitch', 0, 1, 0.02],
+  ['grit', 'voice grit', 0, 1, 0.05],
 ]
 function buildPanel() {
   const style = document.createElement('style')
   style.textContent =
     '#ui{position:fixed;top:8px;right:8px;z-index:9;font:11px monospace;color:#cfc8e8}' +
     '#ui button{background:rgba(10,8,20,.72);color:#cfc8e8;border:1px solid rgba(233,230,247,.22);border-radius:5px;padding:4px 8px;cursor:pointer;font:inherit}' +
-    '#uip{margin-top:6px;width:186px;padding:6px 10px 10px;background:rgba(8,6,14,.85);border:1px solid rgba(233,230,247,.16);border-radius:7px}' +
+    '#uip{margin-top:6px;width:186px;max-height:calc(100vh - 56px);overflow:auto;padding:6px 10px 10px;background:rgba(8,6,14,.85);border:1px solid rgba(233,230,247,.16);border-radius:7px}' +
     '#uip label{display:grid;grid-template-columns:1fr auto;gap:1px 6px;margin:8px 0 0}' +
     '#uip b{color:#b39cf2;font-weight:600}' +
     '#uip input{grid-column:1/3;width:100%;accent-color:#a06cf0;margin:2px 0 0}' +
