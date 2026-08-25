@@ -28,6 +28,21 @@ function wBounds() {
 // screen pixel -> world coord (input lands where you actually clicked, at any zoom)
 function toWorld(px, py) { return { x: CX + (px - CX) / zoom, y: CY + (py - CY) / zoom } }
 
+// ---------- live tuning ----------
+// Every knob the simulation reads lives here so the on-screen panel (buildPanel,
+// bottom of file) can reshape the piece while it runs. DEFAULTS backs the reset.
+const DEFAULTS = {
+  floor: 8,    // never fewer than this many unicorns
+  trigger: 8,  // a corner turns into a super-pile once this many die in it
+  hunger: 15,  // the eye's reach — how close is fatal
+  lure: 1,     // how hard the cross/horns tug the herd
+  pull: 1,     // how hard super-piles drag the living in
+  weep: 1,     // how often the eye weeps acid
+  creep: 1,    // how far piles spread inward as they grow
+  zcap: 2.4,   // how far the world is allowed to zoom out
+}
+const cfg = { ...DEFAULTS }
+
 // ---------- deterministic per-room world ----------
 // One seed for everyone in the same relay room, so the stars, the nebula bands,
 // the eye's bloodshot capillaries and the starting palette are unique-but-shared:
@@ -130,14 +145,15 @@ canvas.addEventListener('mousedown', onDown)
 addEventListener('mousemove', onMove)
 addEventListener('mouseup', onUp)
 canvas.addEventListener('touchstart', (e) => { onDown(e); e.preventDefault() }, { passive: false })
-addEventListener('touchmove', (e) => { onMove(e); e.preventDefault() }, { passive: false })
+// only swallow the touch while actually dragging the light — otherwise the tuning
+// panel's sliders can't be dragged on a touchscreen
+addEventListener('touchmove', (e) => { onMove(e); if (light.active) e.preventDefault() }, { passive: false })
 addEventListener('touchend', onUp)
 
 // ---------- herd (boid-lite) ----------
-// Never fewer than this many unicorns present. Every death (to the eye, or to a
+// Never fewer than cfg.floor unicorns present. Every death (to the eye, or to a
 // super-pile) is topped up the same frame from a fresh spawn at the world's edge,
 // so the sky is never empty — they just keep coming, each one stranger.
-const MIN_UNICORNS = 8
 
 // every unicorn is a little stranger than the last one — brighter body hue,
 // its own secondary marking color, a scatter of spots at fixed spawn-time
@@ -162,7 +178,7 @@ function spawnUnicorn(x, y) {
     ]),
   }
 }
-const herd = Array.from({ length: MIN_UNICORNS + 1 }, () =>
+const herd = Array.from({ length: cfg.floor + 1 }, () =>
   spawnUnicorn(Math.random() * innerWidth, Math.random() * innerHeight))
 let deliveredCount = 0
 let lostCount = 0
@@ -177,7 +193,7 @@ function liveCount() {
 // frame — the moment one dies or crosses home, another walks in from the dark.
 function topUpHerd() {
   let guard = 0
-  while (liveCount() < MIN_UNICORNS && guard++ < 20) {
+  while (liveCount() < cfg.floor && guard++ < 30) {
     const [wl, wr, wt, wb] = wBounds()
     const edge = Math.random()
     const x = edge < 0.5 ? wl + 8 : wr - 8
@@ -241,7 +257,6 @@ function drawLures(now) {
 // color of eaten unicorns. Past a threshold a corner turns into a SUPER pile: it
 // takes on a mutating color, reaches out and drags living unicorns in to consume
 // them, and every meal makes it grow and spread further inward — claiming ground.
-const PILE_TRIGGER = 8
 const piles = [0, 1, 2, 3].map((i) => ({
   i, husks: [], count: 0, sup: false, hue: rng() * 360, r: 0, pull: 0,
 }))
@@ -265,7 +280,7 @@ function addHusk(x, y, hue) {
   const [, , dx, dy] = pileAnchor(p.i)
   // husks mound near the corner and only slowly creep inward — pow() biases most
   // of them toward the corner, so it reads as a growing pile, not scattered confetti
-  const spread = 8 + Math.sqrt(p.count) * 6
+  const spread = (8 + Math.sqrt(p.count) * 6) * cfg.creep
   p.husks.push({
     ox: dx * (5 + Math.pow(Math.random(), 1.7) * spread),
     oy: dy * (5 + Math.pow(Math.random(), 1.7) * spread),
@@ -276,7 +291,7 @@ function addHusk(x, y, hue) {
   p.count++
   p.hue = (p.hue + 18 + Math.random() * 24) % 360 // replicate + change with each addition
   p.r = 12 + Math.sqrt(p.count) * 7
-  if (!p.sup && p.count >= PILE_TRIGGER) {
+  if (!p.sup && p.count >= cfg.trigger) {
     p.sup = true
     elder('A pile in the corner has started to move on its own.')
   }
@@ -294,7 +309,7 @@ function stepPiles(dt) {
       const dx = ax - u.x, dy = ay - u.y
       const d = Math.hypot(dx, dy) || 1
       if (d < reach) {
-        const g = (1 - d / reach) * 0.006 * p.pull * dt
+        const g = (1 - d / reach) * 0.006 * p.pull * dt * cfg.pull
         u.vx += (dx / d) * g
         u.vy += (dy / d) * g
       }
@@ -302,7 +317,7 @@ function stepPiles(dt) {
     }
     worldScaleTarget += Math.min(1.2, p.r / (innerWidth * 0.5)) * 0.55
   }
-  if (worldScaleTarget > 2.4) worldScaleTarget = 2.4
+  if (worldScaleTarget > cfg.zcap) worldScaleTarget = cfg.zcap
 }
 function drawPiles(now) {
   for (const p of piles) {
@@ -349,7 +364,8 @@ function stepAcid(dt, now) {
   weepT -= dt
   weepGlow = Math.max(0, weepGlow - dt * 0.0006)
   if (weepT <= 0) {
-    weepT = 500 + Math.random() * 1400 - pupilDilate * 300 // weeps faster when agitated
+    // weeps faster when agitated, and scaled by the acid-weeping knob
+    weepT = (500 + Math.random() * 1400 - pupilDilate * 300) / Math.max(0.05, cfg.weep)
     weepGlow = 1
     acid.push({ x: ex + (Math.random() - 0.5) * 12, y: ey + 6, vy: 0.02 + Math.random() * 0.03, hue: 70 + Math.random() * 70 })
   }
@@ -486,7 +502,7 @@ function stepHerd(dt, now) {
     // even with the light off. The cross calms them; the horns agitate and hurry.
     const [L, ld] = nearestLure(u.x, u.y)
     if (L && ld > 1) {
-      const lp = L.type ? 0.02 : 0.013
+      const lp = (L.type ? 0.02 : 0.013) * cfg.lure
       u.vx += ((L.x - u.x) / ld) * lp
       u.vy += ((L.y - u.y) / ld) * lp
       if (ld < 80) { const k = L.type ? 1.012 : 0.985; u.vx *= k; u.vy *= k }
@@ -518,7 +534,7 @@ function stepHerd(dt, now) {
     // the eye itself being there to see
     if (skyElderOpen(now) > 0.3) {
       const [ex, ey] = skyElderPos(now)
-      if (Math.hypot(ex - u.x, ey - u.y) < 15 + elderPulse * 10) {
+      if (Math.hypot(ex - u.x, ey - u.y) < cfg.hunger + elderPulse * 10) {
         u.sucked = true
         u.suckT = 0
         continue
@@ -1348,3 +1364,59 @@ const net = connectRelay(ROOM, {
   onError: () => elder('Offline — playing solo. That\'s a fully valid way to play.'),
 })
 elder('A quiet sky. Drag to bring color to it.')
+
+// ---------- live tuning panel ----------
+// A small overlay of sliders bound to cfg, so you can reshape the piece as it runs.
+// Built in JS (not markup) so it travels inside the single bundled file. Toggle with
+// the gear button or the H key; it starts closed so it never fights the sky.
+const TUNABLES = [
+  ['floor', 'unicorns (min)', 3, 30, 1],
+  ['trigger', 'pile awakens at', 2, 20, 1],
+  ['hunger', 'eye hunger', 5, 60, 1],
+  ['lure', 'symbol pull', 0, 3, 0.05],
+  ['pull', 'pile pull', 0, 3, 0.05],
+  ['weep', 'acid weeping', 0, 3, 0.05],
+  ['creep', 'pile creep', 0, 3, 0.05],
+  ['zcap', 'zoom-out', 1, 4, 0.05],
+]
+function buildPanel() {
+  const style = document.createElement('style')
+  style.textContent =
+    '#ui{position:fixed;top:8px;right:8px;z-index:9;font:11px monospace;color:#cfc8e8}' +
+    '#ui button{background:rgba(10,8,20,.72);color:#cfc8e8;border:1px solid rgba(233,230,247,.22);border-radius:5px;padding:4px 8px;cursor:pointer;font:inherit}' +
+    '#uip{margin-top:6px;width:186px;padding:6px 10px 10px;background:rgba(8,6,14,.85);border:1px solid rgba(233,230,247,.16);border-radius:7px}' +
+    '#uip label{display:grid;grid-template-columns:1fr auto;gap:1px 6px;margin:8px 0 0}' +
+    '#uip b{color:#b39cf2;font-weight:600}' +
+    '#uip input{grid-column:1/3;width:100%;accent-color:#a06cf0;margin:2px 0 0}' +
+    '#uip .r{width:100%;margin-top:10px}'
+  document.head.append(style)
+
+  const box = document.createElement('div'); box.id = 'ui'
+  const gear = document.createElement('button'); gear.textContent = '⚙'; gear.title = 'tune (H)'
+  const panel = document.createElement('div'); panel.id = 'uip'
+  let open = false
+  const setOpen = (v) => { open = v; panel.style.display = v ? 'block' : 'none'; gear.style.opacity = v ? 1 : 0.55 }
+  gear.onclick = () => setOpen(!open)
+  addEventListener('keydown', (e) => { if (e.key === 'h' || e.key === 'H') setOpen(!open) })
+
+  const setters = []
+  for (const [key, label, min, max, step] of TUNABLES) {
+    const row = document.createElement('label')
+    const cap = document.createElement('span'); cap.textContent = label
+    const val = document.createElement('b')
+    const s = document.createElement('input')
+    s.type = 'range'; s.min = min; s.max = max; s.step = step; s.value = cfg[key]
+    const show = () => { val.textContent = step < 1 ? (+cfg[key]).toFixed(2) : cfg[key] }
+    s.oninput = () => { cfg[key] = +s.value; show() }
+    show()
+    row.append(cap, val, s); panel.append(row)
+    setters.push(() => { s.value = cfg[key]; show() })
+  }
+  const reset = document.createElement('button'); reset.textContent = 'reset'; reset.className = 'r'
+  reset.onclick = () => { Object.assign(cfg, DEFAULTS); for (const f of setters) f() }
+  panel.append(reset)
+
+  box.append(gear, panel); document.body.append(box)
+  setOpen(false)
+}
+buildPanel()
