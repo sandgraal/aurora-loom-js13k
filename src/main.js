@@ -41,8 +41,8 @@ const DEFAULTS = {
   creep: 1,    // how far piles spread inward as they grow
   zcap: 2.4,   // how far the world is allowed to zoom out
   rot: 1,      // how fast the eye inflames (bloodshot ramp speed)
-  vrate: 0.46, // the eye's voice: speed (low = slow drawl)
-  vpitch: 0.15,// the eye's voice: pitch (low = deep/gravelly)
+  vrate: 0.5,  // the eye's voice: speed (low = slow, laid-back drawl)
+  vpitch: 0.18,// the eye's voice: pitch (low = deep/warm)
   grit: 0.6,   // gravel under the voice: growl + vinyl-crackle amount
 }
 const cfg = { ...DEFAULTS }
@@ -187,19 +187,28 @@ addEventListener('touchend', onUp)
 // and reaches a different length. Always unmistakably a unicorn; never the
 // same unicorn twice.
 function spawnUnicorn(x, y) {
-  const wild = Math.random()
+  const R = Math.random
+  const wild = R()
   return {
     x, y, vx: 0, vy: 0,
-    hue: Math.random() * 360,
+    hue: R() * 360,
     delivered: false, sucked: false, suckT: 0, gone: false,
-    scale: 0.6 + Math.random() * 1.3,
-    spotHue: Math.random() * 360,
-    hornCurl: Math.random() < 0.5 ? 1 : -1,
+    scale: 0.6 + R() * 1.3,
+    spotHue: R() * 360,
+    hornCurl: R() < 0.5 ? 1 : -1,
     wild,
-    marks: Array.from({ length: 1 + Math.floor(Math.random() * 6) }, () => [
-      -14 + Math.random() * 30,
-      -6 + Math.random() * 14,
-      0.8 + Math.random() * 1.6,
+    // --- style: no two the same. build/neck reshape the body; the rest swap parts. ---
+    build: 0.82 + R() * 0.5,   // 0.82 slender .. 1.32 stocky (barrel thickness)
+    neck: 0.6 + R() * 0.8,     // neck length (foals short, horses long)
+    mane: R() * 3 | 0,         // 0 flowing, 1 spiky, 2 short bristle
+    hornType: R() * 4 | 0,     // 0 spiral, 1 straight spike, 2 curved-back, 3 branched
+    tailStyle: R() * 2 | 0,    // 0 long flowing, 1 tufted
+    wings: R() < 0.22,         // a few are winged (alicorn)
+    gallop: R() < 0.5,         // leg pose: galloping vs standing
+    gait: R() * 6.28,          // gait phase so legs don't all swing together
+    beard: R() < 0.18,         // a few have a chin tuft
+    marks: Array.from({ length: R() * 6 | 0 }, () => [
+      -14 + R() * 30, -6 + R() * 14, 0.8 + R() * 1.6,
     ]),
   }
 }
@@ -619,13 +628,36 @@ function stepHerd(dt, now) {
 // read aloud with the browser's built-in speech synthesis, slowed and pitched
 // down for the drawl, and always shown as text too — TTS voices (and this
 // preview sandbox specifically) aren't guaranteed to be available everywhere.
-const RAP_LINES = [
-  "i am the eye... i never close, i never look away...",
-  "i counted every color that you dragged today,",
-  "the little warm ones come to me... they don't come back,",
-  "keep painting all your pretty rainbows on the black,",
-  "i see you... yeah, i see you... i'll be here when you're gone.",
+// A pool of off-kilter, half-sense lines. Each verse pulls a random handful in a
+// random order, so it's never quite the same twice and never quite adds up.
+const LYRIC_POOL = [
+  "i keep your colors in a jar behind my teeth",
+  "count the legs again... you'll get it wrong again",
+  "the moon still owe me seven horses and it know",
+  "every rainbow is a door i already shut",
+  "little light, little light, why you shakin' at me",
+  "i ate a tuesday once, it tasted like your name",
+  "the ground is just a lid, baby, the ground is just a lid",
+  "been watchin' since before you had a face to lose",
+  "don't go where the dark get thick, that's where i keep the rest",
+  "your rainbow's on my tongue and it forgot the way back home",
+  "i blink, and a hundred years fall off the shelf",
+  "the horses know my name but they won't say it twice",
+  "i'm not up in the sky... the sky is up in me",
+  "you feed me pretty colors, i give you back the cold",
+  "somewhere you already gone — i saw it, it was fine",
+  "the stars is just the holes i left in somethin' bigger",
+  "warm ones taste like tuesday, grey ones taste like you",
+  "i had a body once, i left it where you can't",
+  "keep draggin' that light, keep drawin' me a mouth",
+  "shhh... the valley only hungry 'cause i told it to be",
 ]
+function shuffled(arr) {
+  const a = arr.slice()
+  for (let i = a.length - 1; i > 0; i--) { const j = Math.random() * (i + 1) | 0;[a[i], a[j]] = [a[j], a[i]] }
+  return a
+}
+let verseSet = []      // the lines chosen for the current verse
 let currentLine = ''
 let captionTimer = 0
 let actx = null
@@ -659,6 +691,28 @@ function noiseHit(t, dur, freq, gain) {
   src.connect(filt); filt.connect(g); g.connect(actx.destination)
   src.start(t)
 }
+// a generic tuned note through a lowpass — used for the bass and the eerie lead
+function blip(t, freq, dur, type, gain, cutoff) {
+  const o = actx.createOscillator(), g = actx.createGain(), f = actx.createBiquadFilter()
+  o.type = type; o.frequency.setValueAtTime(freq, t)
+  f.type = 'lowpass'; f.frequency.value = cutoff
+  g.gain.setValueAtTime(0.0001, t)
+  g.gain.exponentialRampToValueAtTime(gain, t + 0.012)
+  g.gain.exponentialRampToValueAtTime(0.0006, t + dur)
+  o.connect(f); f.connect(g); g.connect(actx.destination)
+  o.start(t); o.stop(t + dur + 0.02)
+}
+// warm plucked sub-bass
+function bass(t, freq) { blip(t, freq, 0.3, 'triangle', 0.45, 380) }
+// a fuller snare: a noise crack plus a short tonal body
+function snareHit(t) {
+  noiseHit(t, 0.16, 1400, 0.5)
+  const o = actx.createOscillator(), g = actx.createGain()
+  o.type = 'triangle'; o.frequency.setValueAtTime(190, t)
+  o.frequency.exponentialRampToValueAtTime(120, t + 0.12)
+  g.gain.setValueAtTime(0.25, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.14)
+  o.connect(g); g.connect(actx.destination); o.start(t); o.stop(t + 0.16)
+}
 // The browser's speech API only exposes voice/rate/pitch (no distortion), so the
 // "gravel" comes from three things: pick the deepest voice available, run it slow
 // and low, and lay a synthesized growl + vinyl crackle underneath (those we CAN
@@ -669,10 +723,14 @@ function loadVoices() {
     voiceList = speechSynthesis.getVoices() || []
     if (!voiceList.length) return
     if (!voicePinned) {
+      // prefer US English (the vibe we're going for: a deep, warm, older male voice),
+      // then any English. We can't read timbre from the API, so bias by known deep /
+      // warm male voice names across platforms, then anything flagged male.
+      const us = voiceList.filter((v) => /^en[-_]?us/i.test(v.lang))
       const en = voiceList.filter((v) => /^en/i.test(v.lang))
-      const pool = en.length ? en : voiceList
-      // known deep / gruff male voices first, then anything flagged male, then default
-      const pref = ['ralph', 'fred', 'lee', 'bruce', 'albert', 'arthur', 'daniel', 'reed', 'rocko', 'eddy', 'aaron', 'male']
+      const pool = us.length ? us : (en.length ? en : voiceList)
+      const pref = ['ralph', 'reed', 'david', 'mark', 'fred', 'lee', 'rocko', 'guy',
+        'christopher', 'aaron', 'arthur', 'daniel', 'bruce', 'junior', 'grandpa', 'eddy', 'male']
       theVoice = pool.find((v) => pref.some((p) => v.name.toLowerCase().includes(p))) || pool[0]
     }
     if (voiceSelectRefresh) voiceSelectRefresh() // keep the dropdown in sync
@@ -774,21 +832,32 @@ function heartbeat() {
   requestAnimationFrame(heartbeat)
 }
 
-const VERSE_BPM = 60, VERSE_STEP = 60 / VERSE_BPM / 2
-const VERSE_PATTERN = [1, 0, 0, 0, 0, 0, 1, 0] // boom ... bap, boom-boom ... bap
-let verseOn = false, nextStep = 0, stepIdx = 0, verseLines = 0, lastVerseAt = -Infinity
+// A head-nodding boom-bap under a slow, low drawl. All synth: kicks, a moody
+// sub-bass (A-minor i → b7 feel), a fuller snare on the backbeat, swung hats, and a
+// sparse dissonant lead motif every other bar for unease.
+const VERSE_BPM = 76, VERSE_STEP = 60 / VERSE_BPM / 2
+const KICKS = [1, 0, 0, 0, 0, 0, 1, 0]
+const BASS_HZ = [55, 0, 0, 82, 0, 0, 49, 0] // A1 . . A2 . . G1 .
+const LEAD_HZ = [466, 622, 440, 587]        // Bb4 D#5 A4 D5 — deliberately unresolved
+let verseOn = false, nextStep = 0, stepIdx = 0, verseLines = 0, barCount = 0, lastVerseAt = -Infinity
 function scheduleVerse() {
   if (!verseOn) return
   while (nextStep < actx.currentTime + 0.15) {
     const idx = stepIdx % 8
-    if (VERSE_PATTERN[idx]) kick(nextStep)
-    if (idx === 4) noiseHit(nextStep, 0.15, 1500, 0.5) // snare
-    if (idx % 2 === 1) noiseHit(nextStep, 0.05, 6000, 0.2) // hat
+    if (KICKS[idx]) kick(nextStep)
+    if (BASS_HZ[idx]) bass(nextStep, BASS_HZ[idx])
+    if (idx === 4) snareHit(nextStep) // backbeat
+    if (idx % 2 === 1) noiseHit(nextStep, 0.045, 7000, (idx === 3 || idx === 7) ? 0.26 : 0.14) // hats w/ dynamics
+    if (idx === 2 && barCount % 2 === 0) { // sparse eerie lead
+      const f = LEAD_HZ[(barCount / 2 | 0) % LEAD_HZ.length]
+      blip(nextStep, f, 0.55, 'triangle', 0.11, 3200)
+      blip(nextStep, f * 1.005, 0.55, 'triangle', 0.08, 3200) // detuned twin
+    }
     // start a bar's line only once the voice has finished the last one, so a slow
     // gravelly delivery never piles up or gets clipped — bars between ride the beat.
-    if (idx === 0 && verseLines < RAP_LINES.length &&
+    if (idx === 0 && verseLines < verseSet.length &&
         (!window.speechSynthesis || !speechSynthesis.speaking)) {
-      currentLine = RAP_LINES[verseLines]
+      currentLine = verseSet[verseLines]
       verseLines++
       captionTimer = 1
       elder(currentLine)
@@ -797,10 +866,11 @@ function scheduleVerse() {
     }
     nextStep += VERSE_STEP
     stepIdx++
-    // end once every line has been spoken and the voice has fallen silent
-    if (verseLines >= RAP_LINES.length &&
+    if (idx === 7) barCount++
+    // end once every chosen line has been spoken and the voice has fallen silent
+    if (verseLines >= verseSet.length &&
         (!window.speechSynthesis || !speechSynthesis.speaking)) { verseOn = false; droneStop(); return }
-    if (stepIdx > RAP_LINES.length * 24) { verseOn = false; droneStop(); return } // safety
+    if (stepIdx > verseSet.length * 24) { verseOn = false; droneStop(); return } // safety
   }
   requestAnimationFrame(scheduleVerse)
 }
@@ -814,9 +884,11 @@ function startVerse() {
   if (!actx) return
   droneStart()
   if (!hbStarted) { hbStarted = true; hbNext = actx.currentTime; heartbeat() }
+  verseSet = shuffled(LYRIC_POOL).slice(0, 6) // a fresh random handful, random order
   verseOn = true
   stepIdx = 0
   verseLines = 0
+  barCount = 0
   nextStep = actx.currentTime + 0.05
   scheduleVerse()
 }
@@ -1131,132 +1203,171 @@ function drawUnicorn(u) {
   const dim = u.delivered
   const hue = dim ? 0 : u.hue
   const sat = dim ? '0%' : '90%'
-  const inkStroke = dim ? 'hsla(0,0%,90%,0.6)' : `hsla(${hue},${sat},74%,1)`
-  const fillTone = dim ? 'hsla(0,0%,90%,0.12)' : `hsla(${hue},${sat},70%,0.22)`
+  const ink = dim ? 'hsla(0,0%,90%,0.7)' : `hsla(${hue},${sat},78%,1)`
+  const fill = dim ? 'hsla(0,0%,90%,0.14)' : `hsla(${hue},${sat},68%,0.26)`
 
-  // caught by the eye: shrinks to nothing as it's dragged in — "teeny tiny
-  // unicorn" is the shrink curve, the pop happens on the frame it hits zero.
-  // u.scale is the "some bigger, some smaller" size each unicorn spawns with.
+  // caught by the eye: shrinks to nothing as it's dragged in; u.scale is the
+  // per-unicorn "some bigger, some smaller" size.
   const base = 1.7 * u.scale
   const shrink = u.sucked ? Math.max(0.02, 1 - u.suckT) * base : base
+  const b = u.build, n = u.neck
+  const gait = Math.sin(performance.now() * 0.007 + u.gait) * (u.gallop ? 3.2 : 0.7)
 
   ctx.save()
   ctx.translate(u.x, u.y)
   ctx.rotate(a)
   ctx.scale(shrink, shrink)
   ctx.globalCompositeOperation = 'lighter'
-
-  // soft body glow first, so the unicorn reads as a presence before the linework
-  const glowGrad = ctx.createRadialGradient(4, -6, 0, 4, -6, 20)
-  glowGrad.addColorStop(0, `hsla(${hue},${sat},65%,${dim ? 0.14 : 0.4})`)
-  glowGrad.addColorStop(1, 'hsla(0,0%,0%,0)')
-  ctx.fillStyle = glowGrad
-  ctx.beginPath(); ctx.arc(4, -6, 20, 0, Math.PI * 2); ctx.fill()
-
   ctx.lineCap = 'round'
   ctx.lineJoin = 'round'
+
+  // soft presence glow first
+  const gg = ctx.createRadialGradient(0, -5, 0, 0, -5, 22)
+  gg.addColorStop(0, `hsla(${hue},${sat},65%,${dim ? 0.12 : 0.36})`)
+  gg.addColorStop(1, 'hsla(0,0%,0%,0)')
+  ctx.fillStyle = gg
+  ctx.beginPath(); ctx.arc(0, -5, 22, 0, Math.PI * 2); ctx.fill()
+
   ctx.shadowBlur = dim ? 4 : 9
   ctx.shadowColor = `hsl(${hue},${sat},65%)`
-  ctx.strokeStyle = inkStroke
-  ctx.lineWidth = 1.5
+  ctx.strokeStyle = ink
+  ctx.fillStyle = fill
 
-  // legs, drawn first so the body overlaps them
-  ctx.beginPath()
-  ctx.moveTo(-8, 3); ctx.lineTo(-9, 10)
-  ctx.moveTo(1, 2); ctx.lineTo(0, 10)
-  ctx.stroke()
+  // head base sits at the top of the neck; neck length shifts it up/forward
+  const hbx = 8, hby = -6 - 5 * n
+  const hx = hbx + 2, hy = hby
 
-  // tail — a couple of flowing strands, not one stiff line
-  ctx.beginPath()
-  ctx.moveTo(-10, 2)
-  ctx.quadraticCurveTo(-16, 4, -15, 11)
-  ctx.moveTo(-10, 2)
-  ctx.quadraticCurveTo(-15, 1, -17, 6)
-  ctx.stroke()
-
-  // body: one confident arched stroke from haunch to chest
-  ctx.beginPath()
-  ctx.moveTo(-10, 2)
-  ctx.quadraticCurveTo(-3, -6, 5, -3)
-  ctx.stroke()
-
-  // mane, flowing back along the neck
-  ctx.beginPath()
-  ctx.moveTo(6, -10)
-  ctx.quadraticCurveTo(2, -8, -2, -3)
-  ctx.moveTo(7, -9)
-  ctx.quadraticCurveTo(4, -6, 0, -1)
-  ctx.stroke()
-
-  // neck, rising from the shoulder to the throat
-  ctx.beginPath()
-  ctx.moveTo(5, -3)
-  ctx.quadraticCurveTo(6, -8, 8, -10)
-  ctx.stroke()
-
-  // --- head: the part that has to actually read as a unicorn ---
-  ctx.beginPath()
-  ctx.moveTo(8, -10)                                    // throat
-  ctx.quadraticCurveTo(9, -15, 13, -16)                 // up to the forehead
-  ctx.quadraticCurveTo(18, -17, 21, -13)                // brow to nose bridge
-  ctx.quadraticCurveTo(23, -11, 21, -9.5)               // muzzle tip, rounded
-  ctx.quadraticCurveTo(18, -8.5, 16, -9.5)              // under the nose
-  ctx.quadraticCurveTo(13, -10.5, 11, -9)               // mouth/chin
-  ctx.quadraticCurveTo(9, -9.5, 8, -10)                 // back to throat
-  ctx.closePath()
-  ctx.fillStyle = fillTone
-  ctx.fill()
-  ctx.stroke()
-
-  // stranger markings — a scatter of spots in a second color, fixed at
-  // spawn time so they ride along with the body instead of swimming loose
-  if (!dim) {
-    ctx.fillStyle = `hsla(${u.spotHue},85%,72%,0.55)`
-    for (const [mx, my, mr] of u.marks) {
-      ctx.beginPath(); ctx.arc(mx, my, mr, 0, Math.PI * 2); ctx.fill()
+  // wings behind everything (a few unicorns are winged)
+  if (u.wings && !dim) {
+    ctx.lineWidth = 1.2
+    ctx.fillStyle = `hsla(${(hue + 30) % 360},${sat},74%,0.16)`
+    for (const s of [1, 0.72]) {
+      ctx.beginPath()
+      ctx.moveTo(-2, -4)
+      ctx.quadraticCurveTo(-9, -15 * s - 3, -17 * s - 2, -7 * s - 7)
+      ctx.quadraticCurveTo(-9, -7, -2, -4)
+      ctx.closePath(); ctx.fill(); ctx.stroke()
     }
+    ctx.fillStyle = fill
   }
+
+  // four legs with hooves, drawn first so the barrel overlaps their tops
+  ctx.lineWidth = 1.8
+  const leg = (x0, x1) => { ctx.beginPath(); ctx.moveTo(x0, 1); ctx.quadraticCurveTo((x0 + x1) / 2, 7, x1, 11.5); ctx.stroke() }
+  const g = u.gallop ? 1 : 0
+  leg(4, 4 + g * 4 + gait * 0.6)      // front far
+  leg(-8, -8 - g * 5 - gait * 0.6)    // back far
+  leg(5.5, 6 + g * 5 + gait)          // front near
+  leg(-9.5, -10 - g * 3 + gait)       // back near
+
+  // body barrel (filled)
+  ctx.lineWidth = 1.6
+  ctx.beginPath()
+  ctx.moveTo(-11, 0)
+  ctx.quadraticCurveTo(-12.5, -5 * b, -5, -6.5 * b)
+  ctx.quadraticCurveTo(1, -7 * b, 6, -3.5)
+  ctx.quadraticCurveTo(8.5, -0.5, 5, 3.5)
+  ctx.quadraticCurveTo(-2, 5.5, -8, 4)
+  ctx.quadraticCurveTo(-12.5, 3, -11, 0)
+  ctx.closePath()
+  ctx.fill(); ctx.stroke()
+
+  // tail
+  ctx.lineWidth = 1.4
+  ctx.beginPath()
+  if (u.tailStyle === 0) { // long flowing
+    ctx.moveTo(-11, -2); ctx.quadraticCurveTo(-18, 2, -16, 12)
+    ctx.moveTo(-11, -1); ctx.quadraticCurveTo(-16, 3, -18, 8)
+  } else { // tufted
+    ctx.moveTo(-11, -1); ctx.quadraticCurveTo(-15, 4, -14, 10)
+    ctx.moveTo(-11, -1); ctx.quadraticCurveTo(-13, 5, -12, 9)
+  }
+  ctx.stroke()
+
+  // neck (filled tapered wedge from shoulder up to the head base)
+  ctx.lineWidth = 1.6
+  ctx.beginPath()
+  ctx.moveTo(4, -3)
+  ctx.quadraticCurveTo(6, -6 - 3 * n, hbx - 1.5, hby + 1.5)
+  ctx.lineTo(hbx + 3, hby + 1)
+  ctx.quadraticCurveTo(9.5, -6 - 2 * n, 7.5, -1.5)
+  ctx.closePath()
+  ctx.fill(); ctx.stroke()
+
+  // head — a horse muzzle reaching up-forward from the neck
+  ctx.beginPath()
+  ctx.moveTo(hbx - 1.5, hby + 1.5)                      // throat
+  ctx.quadraticCurveTo(hx - 1, hy - 4, hx + 3, hy - 4.5) // poll / forehead
+  ctx.quadraticCurveTo(hx + 7, hy - 4, hx + 8.5, hy - 0.8) // nose bridge
+  ctx.quadraticCurveTo(hx + 9, hy + 1.4, hx + 6.5, hy + 1.8) // muzzle tip
+  ctx.quadraticCurveTo(hx + 4, hy + 2, hx + 3, hy + 1)  // mouth / chin
+  ctx.quadraticCurveTo(hx + 1, hy + 1.6, hbx + 3, hby + 1) // back to throat
+  ctx.closePath()
+  ctx.fill(); ctx.stroke()
 
   // ear
   ctx.beginPath()
-  ctx.moveTo(12, -15.5)
-  ctx.lineTo(10.5, -20)
-  ctx.lineTo(14.5, -17)
+  ctx.moveTo(hx + 1, hy - 4)
+  ctx.lineTo(hx - 0.5, hy - 8)
+  ctx.lineTo(hx + 3.2, hy - 5.5)
   ctx.closePath()
-  ctx.fillStyle = fillTone
-  ctx.fill()
-  ctx.stroke()
+  ctx.fill(); ctx.stroke()
 
   // eye
-  ctx.fillStyle = dim ? 'hsla(0,0%,95%,0.7)' : `hsla(${hue},40%,92%,0.95)`
-  ctx.beginPath()
-  ctx.arc(16, -13, 0.9, 0, Math.PI * 2)
-  ctx.fill()
+  ctx.fillStyle = dim ? 'hsla(0,0%,95%,0.7)' : `hsla(${hue},40%,94%,0.95)`
+  ctx.beginPath(); ctx.arc(hx + 3, hy - 1.8, 0.9, 0, Math.PI * 2); ctx.fill()
 
-  // horn — twisted, and the single brightest thing on the whole unicorn.
-  // Length and curl direction vary per unicorn — some are barely a nub,
-  // some are dramatically, unreasonably long.
+  // chin tuft (a few)
+  if (u.beard && !dim) {
+    ctx.strokeStyle = ink; ctx.lineWidth = 1
+    ctx.beginPath(); ctx.moveTo(hx + 4.5, hy + 1.6); ctx.quadraticCurveTo(hx + 3.5, hy + 5, hx + 5.5, hy + 6); ctx.stroke()
+  }
+
+  // mane along the back of the neck (styled)
+  ctx.strokeStyle = `hsla(${(hue + 20) % 360},${sat},82%,0.9)`
+  ctx.lineWidth = 1.3
+  for (let i = 0; i <= 5; i++) {
+    const p = i / 5
+    const mx = 4.5 + (hbx - 4.5) * p, my = -3 + (hby - 1 - (-3)) * p
+    ctx.beginPath(); ctx.moveTo(mx, my)
+    if (u.mane === 0) ctx.quadraticCurveTo(mx - 4, my - 1, mx - 5, my + 3)      // flowing
+    else if (u.mane === 1) ctx.lineTo(mx - 2 - p * 2, my - 3 - p * 2)           // spiky
+    else ctx.lineTo(mx - 1, my - 3)                                            // bristle
+    ctx.stroke()
+  }
+
+  // markings on the barrel (a second color, fixed at spawn)
+  if (!dim) {
+    ctx.fillStyle = `hsla(${u.spotHue},85%,72%,0.5)`
+    for (const [mx, my, mr] of u.marks) { ctx.beginPath(); ctx.arc(mx, my, mr, 0, Math.PI * 2); ctx.fill() }
+  }
+
+  // horn — the brightest thing on it, and a different shape on each one
   ctx.save()
   ctx.shadowBlur = dim ? 5 : 16
-  const hornHue = (hue + 45) % 360
-  ctx.strokeStyle = dim ? 'hsla(0,0%,96%,0.65)' : `hsl(${hornHue},95%,84%)`
-  ctx.lineWidth = 1.6
-  const hornWild = u.wild || 0
-  const tipX = 19 + hornWild * 9, tipY = -25 - hornWild * 14
+  ctx.strokeStyle = dim ? 'hsla(0,0%,96%,0.65)' : `hsl(${(hue + 45) % 360},95%,85%)`
+  ctx.lineWidth = 1.7
+  const wx = hx + 2, wy = hy - 4, len = 8 + u.wild * 12
   ctx.beginPath()
-  ctx.moveTo(13.5, -16.2)
-  ctx.lineTo(tipX, tipY)
+  if (u.hornType === 1) { // straight spike
+    ctx.moveTo(wx, wy); ctx.lineTo(wx + 4, wy - len)
+  } else if (u.hornType === 2) { // curved back
+    ctx.moveTo(wx, wy); ctx.quadraticCurveTo(wx + 3, wy - len * 0.6, wx - 2, wy - len)
+  } else if (u.hornType === 3) { // branched / antler-ish
+    ctx.moveTo(wx, wy); ctx.lineTo(wx + 3, wy - len)
+    ctx.moveTo(wx + 1.6, wy - len * 0.5); ctx.lineTo(wx + 5, wy - len * 0.72)
+    ctx.moveTo(wx + 2.3, wy - len * 0.72); ctx.lineTo(wx - 1, wy - len * 0.9)
+  } else { // spiral (default)
+    ctx.moveTo(wx, wy); ctx.lineTo(wx + 4, wy - len)
+  }
   ctx.stroke()
-  // spiral ticks along the horn — direction flips per unicorn (u.hornCurl)
-  ctx.lineWidth = 1
-  const curl = u.hornCurl || 1
-  for (let i = 1; i <= 3; i++) {
-    const p = i / 4
-    const bx = 13.5 + (tipX - 13.5) * p, by = -16.2 + (tipY + 16.2) * p
-    ctx.beginPath()
-    ctx.moveTo(bx - 1.1 * curl, by + 0.5 * curl)
-    ctx.lineTo(bx + 1.1 * curl, by - 0.5 * curl)
-    ctx.stroke()
+  if (u.hornType === 0) { // spiral ticks
+    ctx.lineWidth = 1
+    const tx = wx + 4, ty = wy - len, curl = u.hornCurl
+    for (let i = 1; i <= 3; i++) {
+      const p = i / 4, bx = wx + (tx - wx) * p, by = wy + (ty - wy) * p
+      ctx.beginPath(); ctx.moveTo(bx - 1.1 * curl, by + 0.5 * curl); ctx.lineTo(bx + 1.1 * curl, by - 0.5 * curl); ctx.stroke()
+    }
   }
   ctx.restore()
 
