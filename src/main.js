@@ -40,6 +40,7 @@ const DEFAULTS = {
   weep: 1,     // how often the eye weeps acid
   creep: 1,    // how far piles spread inward as they grow
   zcap: 2.4,   // how far the world is allowed to zoom out
+  rbow: 1,     // the twisted rainbow's presence/intensity
   rot: 1,      // how fast the eye inflames (bloodshot ramp speed)
   vrate: 0.5,  // the eye's voice: speed (low = slow, laid-back drawl)
   vpitch: 0.18,// the eye's voice: pitch (low = deep/warm)
@@ -102,6 +103,15 @@ const bruises = Array.from({ length: 12 + (rng() * 8 | 0) }, () => ({
   r: 0.05 + rng() * 0.15,
   hue: [95, 52, 285][rng() * 3 | 0],
   ph: rng() * 6.28,
+}))
+// the twisted rainbow — 7 bruised bands that writhe, sag, flicker and rot into gaps.
+// Which bands are necrotic, their phases, and how wrong each hue is come from the
+// seed, so a room shares its rainbow. Presence is painted in by sky.charge.
+const RB_BANDS = 7
+const rbSeed = Array.from({ length: RB_BANDS }, () => ({
+  ph: rng() * 6.28,
+  rot: rng() < 0.28,             // this band is necrotic (dark, desaturated, broken)
+  hueShift: (rng() - 0.5) * 44,  // each band's hue is a little wrong / out of order
 }))
 // small eyes that open in the dark, blink once, and are gone (cosmetic, no hitbox)
 const darkEyes = []
@@ -477,6 +487,87 @@ function drawAcid() {
     ctx.fillStyle = `hsla(${a.hue | 0},90%,55%,0.85)`
     ctx.shadowBlur = 8; ctx.shadowColor = `hsla(${a.hue | 0},90%,50%,0.8)`
     ctx.beginPath(); ctx.ellipse(a.x, a.y, 2.2, 3.6, 0, 0, Math.PI * 2); ctx.fill()
+  }
+  ctx.restore()
+}
+
+// ---------- the twisted rainbow ----------
+// You paint it into being by dragging (presence tracks sky.charge). It arcs over the
+// herd, but the bands are bruised and out of order, it sags and writhes, flickers like
+// bad neon, rots into gaps — and it drips corrupted color that stains the world.
+function rbPresence() { return Math.min(1, sky.charge * 1.7) * cfg.rbow }
+// geometry helper: the arc's center + base radius for the current world
+function rbGeom() {
+  const [l, r, tp, bt] = wBounds()
+  const H = bt - tp
+  return [(l + r) / 2, tp + H * 1.15, H * 0.92, H] // cx, cy(below frame), R, H
+}
+const rbDrips = []
+let rbDripT = 1500
+function stepRainbow(dt) {
+  const pres = rbPresence()
+  rbDripT -= dt
+  if (rbDripT <= 0 && pres > 0.3) {
+    rbDripT = 350 + Math.random() * 1100
+    const [cx0, cy0, R] = rbGeom()
+    const a = Math.PI * (1.2 + Math.random() * 0.6)
+    const rr = R - (Math.random() * RB_BANDS) * 6.5
+    rbDrips.push({ x: cx0 + Math.cos(a) * rr, y: cy0 + Math.sin(a) * rr + 6, vy: 0.02, hue: Math.random() * 300 })
+  }
+  const [, , , wb] = wBounds()
+  for (let i = rbDrips.length - 1; i >= 0; i--) {
+    const d = rbDrips[i]
+    d.vy += dt * 0.00012
+    d.y += d.vy * dt
+    if (d.y >= wb - 4 || Math.random() < 0.004) {
+      // bleed into the same stain system the acid uses — the rainbow rots the world too
+      stains.push({ x: d.x, y: d.y, r: 6, mr: 20 + Math.random() * 30, hue: d.hue, age: 0 })
+      if (stains.length > 90) stains.shift()
+      rbDrips.splice(i, 1)
+    }
+  }
+}
+function drawRainbow(now) {
+  const pres = rbPresence()
+  if (pres <= 0.02) return
+  const [cx0, cy0, R, H] = rbGeom()
+  const a0 = Math.PI * 1.18, a1 = Math.PI * 1.82, N = 64
+  ctx.save()
+  ctx.globalCompositeOperation = 'lighter'
+  for (let bnd = 0; bnd < RB_BANDS; bnd++) {
+    const s = rbSeed[bnd]
+    const baseHue = ((bnd / RB_BANDS) * 360 + s.hueShift + now * 0.006) % 360 // drifting, wrong order
+    const thick = 5 + pres * 3.5
+    const rr0 = R - bnd * (thick + 1.4)
+    const flick = 0.68 + 0.32 * Math.sin(now * 0.021 + s.ph * 5) // bad-neon flicker
+    ctx.lineWidth = thick
+    ctx.strokeStyle = `hsla(${baseHue | 0},${s.rot ? 18 : 74}%,${s.rot ? 28 : 60}%,${pres * 0.6 * flick})`
+    ctx.shadowBlur = 8
+    ctx.shadowColor = `hsla(${baseHue | 0},80%,55%,${pres * 0.4})`
+    ctx.beginPath()
+    let up = true
+    for (let i = 0; i <= N; i++) {
+      const t = i / N, a = a0 + (a1 - a0) * t
+      const mid = Math.sin(t * Math.PI)                  // 0..1..0 across the arc
+      const sag = mid * H * 0.11 * pres                  // droops in the middle
+      const wob = Math.sin(a * 3 + now * 0.0016 + s.ph) * (4 + pres * 9)
+        + Math.sin(a * 7 - now * 0.0009 + s.ph) * (2 + pres * 4)
+      const rr = rr0 + wob
+      const x = cx0 + Math.cos(a) * rr, y = cy0 + Math.sin(a) * rr + sag
+      const gap = s.rot && Math.sin(a * 9 + s.ph * 3) > 0.35 // necrotic bands break up
+      if (gap) { up = true; continue }
+      if (up) { ctx.moveTo(x, y); up = false } else ctx.lineTo(x, y)
+    }
+    ctx.stroke()
+  }
+  ctx.restore()
+}
+function drawRbDrips() {
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'
+  for (const d of rbDrips) {
+    ctx.fillStyle = `hsla(${d.hue | 0},85%,60%,0.85)`
+    ctx.shadowBlur = 6; ctx.shadowColor = `hsla(${d.hue | 0},85%,55%,0.7)`
+    ctx.beginPath(); ctx.ellipse(d.x, d.y, 2, 3.4, 0, 0, Math.PI * 2); ctx.fill()
   }
   ctx.restore()
 }
@@ -1473,6 +1564,7 @@ function render(now) {
   drawStains()
   drawLures(now)
   drawBlobs(now)
+  drawRainbow(now) // the twisted arc, behind the eye and the herd
   drawSkyElder(now)
   if (captionTimer > 0) drawElderCaption(now)
   drawTrail()
@@ -1480,6 +1572,7 @@ function render(now) {
   drawLightOrb(now)
   for (const u of herd) if (!u.gone) drawUnicorn(u)
   drawAcid()
+  drawRbDrips()
   drawParticles()
 
   ctx.restore()
@@ -1527,6 +1620,7 @@ function loop(t) {
   stepHerd(dt, t)
   stepBlobs(dt)
   stepAcid(dt, t)
+  stepRainbow(dt)
   topUpHerd() // the moment one dies or crosses home, another walks in
   // ease the world's growth and the camera zoom that trails it
   worldScale += (worldScaleTarget - worldScale) * 0.02
@@ -1614,6 +1708,7 @@ const TUNABLES = [
   ['weep', 'acid weeping', 0, 3, 0.05],
   ['creep', 'pile creep', 0, 3, 0.05],
   ['zcap', 'zoom-out', 1, 4, 0.05],
+  ['rbow', 'twisted rainbow', 0, 2, 0.05],
   ['rot', 'bloodshot rate', 0, 4, 0.05],
   ['vrate', 'voice speed', 0.2, 1, 0.02],
   ['vpitch', 'voice pitch', 0, 1, 0.02],
