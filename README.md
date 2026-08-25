@@ -1,7 +1,7 @@
 # Aurora Loom
 
 ## What this is
-An exhibit of what is possible from a single .html, under 13k. Meh, Iunno really I'm trying to make it as auto-generational as possible and let it be as weird or as normal as it wants to be within the framework provided...You drag a light across a night sky; a small wild herd of unicorns is drawn to
+Pushing what is possible from a single .html, under 13k. Meh, Iunno really I'm trying to make it as auto-generational as possible and let it be as weird or as normal as it wants to be within the framework provided...You drag a light across a night sky; a small wild herd of unicorns is drawn to
 warmth. Avoid the eye at all costs, who know why it seems so creepy. Get enough shared "charge" into the sky and the herd
 crosses to the valley. If other people happen to be playing right now, your
 sky and theirs are the same sky.
