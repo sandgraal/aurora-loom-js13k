@@ -169,7 +169,7 @@ function pointerPos(e) {
   const t = e.touches ? e.touches[0] : e
   return toWorld(t.clientX, t.clientY)
 }
-function onDown(e) { light.active = true; Object.assign(light, pointerPos(e)); startVerse() }
+function onDown(e) { started = true; light.active = true; Object.assign(light, pointerPos(e)); startVerse() }
 function onMove(e) { if (light.active) Object.assign(light, pointerPos(e)) }
 function onUp() { light.active = false }
 // Mouse/touch listeners alongside Pointer Events: harmless double-fire on a normal
@@ -239,6 +239,12 @@ const GOAL = 13, SHIELD = 66
 let phase = 'play' // 'play' | 'dawn' | 'taken'
 let endT = 0, eyeClose = 0
 const shielded = (u) => light.active && Math.hypot(light.x - u.x, light.y - u.y) < SHIELD
+// title/how-to intro (fades on the first drag), a saved personal best, and the other
+// riders currently in this sky (their cursors, for the Online layer)
+let started = false, introA = 1, best = 0
+try { best = +localStorage.getItem('al_best') || 0 } catch (e) { /* private window — no best */ }
+function saveBest() { if (deliveredCount > best) { best = deliveredCount; try { localStorage.setItem('al_best', best) } catch (e) { /* ignore */ } } }
+const riders = new Map() // id -> {x,y,hue,d,t}
 
 // how many unicorns are actually on the board (not gone, not already delivered)
 function liveCount() {
@@ -650,6 +656,7 @@ function stepHerd(dt, now) {
       u.y += (ey - u.y) * 0.16
       if (u.suckT >= 1) {
         lostCount++
+        thud()
         spawnVoidPop(ex, ey)
         addSplat(u.x, u.y, u.hue)   // remains smear onto the nearest edge of the glass
         irisFlush = { hue: u.hue, t: 1 } // it digests the color: the iris flushes its hue
@@ -719,6 +726,7 @@ function stepHerd(dt, now) {
     // It leaves the board (topUpHerd walks another in), so the count never drops.
     if (u.x > wr - 24 && sky.charge > 0.5) {
       deliveredCount++
+      chime()
       spawnDeliveryBurst(u.x, u.y)
       u.gone = true
       elder(`${logLine('cross')} — ${deliveredCount} so far`)
@@ -931,6 +939,10 @@ function thump(t, vol) {
   o.connect(g); g.connect(actx.destination)
   o.start(t); o.stop(t + 0.22)
 }
+// win/loss stingers: a hopeful little ascending figure when one crosses home, a low
+// ominous hit when the eye takes one. Both no-op silently without an AudioContext.
+function chime() { if (!actx) return; const t = actx.currentTime;[0, 4, 7, 12].forEach((s, i) => blip(t + i * 0.05, 523 * 2 ** (s / 12), 0.3, 'triangle', 0.12, 4500)) }
+function thud() { if (!actx) return; const t = actx.currentTime; thump(t, 0.5); blip(t, 58, 0.45, 'sawtooth', 0.22, 300) }
 let hbStarted = false, hbNext = 0
 function heartbeat() {
   if (!actx) return
@@ -1591,8 +1603,58 @@ function drawEnding() {
   ctx.fillText(dawn ? 'the herd crossed' : 'the sky is taken', innerWidth / 2, innerHeight * 0.44)
   ctx.font = '15px monospace'
   ctx.fillStyle = dawn ? `rgba(60,40,20,${k * 0.85})` : `rgba(255,195,195,${k * 0.85})`
-  ctx.fillText(dawn ? `${deliveredCount} carried to the valley` : `${lostCount} taken into the dark`, innerWidth / 2, innerHeight * 0.54)
+  ctx.fillText((dawn ? `${deliveredCount} carried to the valley` : `${lostCount} taken into the dark`) + (best ? `   ·   best ${best}` : ''), innerWidth / 2, innerHeight * 0.54)
   ctx.textAlign = 'left'
+}
+
+// a warm, inviting glow on the right edge — the valley, where you're taking the herd
+function drawValley(now) {
+  const [wl, wr, wt, wb] = wBounds()
+  const band = (wr - wl) * 0.11, pulse = 0.5 + 0.5 * Math.sin(now * 0.002)
+  const g = ctx.createLinearGradient(wr - band, 0, wr, 0)
+  g.addColorStop(0, 'hsla(84,80%,60%,0)')
+  g.addColorStop(1, `hsla(84,80%,62%,${0.1 + pulse * 0.1})`)
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'
+  ctx.fillStyle = g
+  ctx.fillRect(wr - band, wt, band, wb - wt)
+  ctx.restore()
+}
+// the other riders in this sky right now: a faint drifting cursor for each (mapped from
+// their normalized position). The "you are not alone in this sky" cue for the Online cat.
+function drawRiders() {
+  const now = performance.now()
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'
+  for (const r of riders.values()) {
+    const a = Math.max(0, 1 - (now - r.t) / 2500) * 0.55
+    if (a <= 0.02) continue
+    const x = r.x * innerWidth, y = r.y * innerHeight
+    ctx.shadowBlur = 16; ctx.shadowColor = `hsl(${r.hue | 0},90%,60%)`
+    ctx.fillStyle = `hsla(${r.hue | 0},90%,72%,${a})`
+    ctx.beginPath(); ctx.arc(x, y, 6, 0, Math.PI * 2); ctx.fill()
+    ctx.shadowBlur = 0
+    ctx.strokeStyle = `hsla(${r.hue | 0},90%,82%,${a * 0.8})`; ctx.lineWidth = 1
+    ctx.beginPath(); ctx.arc(x, y, 12, 0, Math.PI * 2); ctx.stroke()
+  }
+  ctx.restore()
+}
+// the title + one-line how-to; fades on the first drag (which also starts the audio)
+function drawIntro() {
+  ctx.save()
+  ctx.fillStyle = `rgba(6,4,12,${introA * 0.72})`
+  ctx.fillRect(0, 0, innerWidth, innerHeight)
+  ctx.globalAlpha = introA
+  ctx.textAlign = 'center'
+  const S = Math.min(innerWidth, innerHeight)
+  ctx.fillStyle = '#f0e9ff'; ctx.font = `italic ${S * 0.09}px Georgia, serif`
+  ctx.fillText('Aurora Loom', innerWidth / 2, innerHeight * 0.38)
+  ctx.fillStyle = '#cfc8e8'; ctx.font = '15px monospace'
+  ctx.fillText('drag the light  ·  keep the herd inside it  ·  walk them to the valley', innerWidth / 2, innerHeight * 0.49)
+  ctx.fillText(`get ${GOAL} across before the eye takes the sky`, innerWidth / 2, innerHeight * 0.55)
+  const pulse = 0.5 + 0.5 * Math.sin(performance.now() * 0.004)
+  ctx.fillStyle = `rgba(185,165,240,${0.4 + pulse * 0.6})`
+  ctx.fillText('— drag to begin —', innerWidth / 2, innerHeight * 0.68)
+  ctx.globalAlpha = 1; ctx.textAlign = 'left'
+  ctx.restore()
 }
 
 // ---------- render ----------
@@ -1615,6 +1677,7 @@ function render(now) {
   ctx.translate(CX, CY); ctx.scale(zoom, zoom); ctx.translate(-CX, -CY)
 
   drawStains()
+  drawValley(now) // the goal glow on the right edge
   drawLures(now)
   drawBlobs(now)
   drawRainbow(now) // the twisted arc, behind the eye and the herd
@@ -1632,15 +1695,22 @@ function render(now) {
 
   // --- screen overlays ---
   drawVignette(now)
+  drawRiders() // other players' cursors, floating over the shared sky
   if (phase === 'play') {
     // minimal ambient HUD — progress toward the goal; the reddening edge carries the danger
     ctx.fillStyle = 'rgba(240,235,255,0.6)'
     ctx.font = '13px monospace'
     ctx.textAlign = 'left'
-    ctx.fillText(`${deliveredCount} / ${GOAL} crossed${peerCount ? '   ·   ' + peerCount + ' riders' : ''}`, 12, 22)
+    let total = deliveredCount
+    for (const r of riders.values()) total += r.d
+    const bestTxt = best ? '   ·   best ' + best : ''
+    ctx.fillText(peerCount
+      ? `${deliveredCount} / ${GOAL} crossed   ·   this sky: ${total}   ·   ${peerCount} riders${bestTxt}`
+      : `${deliveredCount} / ${GOAL} crossed${bestTxt}`, 12, 22)
   } else {
     drawEnding()
   }
+  if (introA > 0) drawIntro()
 }
 
 // wipe the mutable simulation for a fresh round (the room's seeded look persists as
@@ -1719,10 +1789,15 @@ function loop(t) {
   // This IS the doom clock: reach 1 and the sky is taken.
   if (phase === 'play') bloodshot = Math.min(1, Math.max(0, bloodshot + dt * (0.000008 * cfg.rot - 0.0000005)))
 
+  if (started) introA = Math.max(0, introA - dt * 0.0016) // title fades once you grab the light
+  // forget riders we haven't heard from in a couple of seconds
+  const tnow = performance.now()
+  for (const [id, r] of riders) if (tnow - r.t > 2500) riders.delete(id)
+
   // --- the arc: win at GOAL, lose when the eye maxes; play the ending, then regen ---
   if (phase === 'play') {
-    if (deliveredCount >= GOAL) { phase = 'dawn'; endT = 0 }
-    else if (bloodshot >= 1) { phase = 'taken'; endT = 0 }
+    if (deliveredCount >= GOAL) { phase = 'dawn'; endT = 0; saveBest() }
+    else if (bloodshot >= 1) { phase = 'taken'; endT = 0; saveBest() }
   } else {
     endT += dt
     if (phase === 'dawn') { eyeClose = Math.min(1, eyeClose + dt * 0.0005); bloodshot = Math.max(0, bloodshot - dt * 0.0006) }
@@ -1758,13 +1833,17 @@ function broadcastThrottled() {
   const now = performance.now()
   if (now - lastBroadcast < 120) return // ~8/sec cap, be a good citizen on a shared relay
   lastBroadcast = now
-  net.send({ t: 'sky', charge: sky.charge, hue: sky.hue })
+  // include who we are, our light's screen-normalized position, and our delivery count,
+  // so other players can SEE us moving in the shared sky and a room-wide tally can form
+  const sx = (CX + (light.x - CX) * zoom) / innerWidth
+  const sy = (CY + (light.y - CY) * zoom) / innerHeight
+  net.send({ t: 'sky', id: net.id, charge: sky.charge, hue: sky.hue, x: sx, y: sy, d: deliveredCount })
 }
 
 const net = connectRelay(ROOM, {
   onId: () => elder('Connected to today\'s sky.'),
   onPeerJoin: (id) => { peerCount++; elder(`A rider joined (${id.slice(0, 6)}). ${peerCount} here now.`) },
-  onPeerLeave: (id) => { peerCount = Math.max(0, peerCount - 1); elder(`A rider left (${id.slice(0, 6)}). ${peerCount} here now.`) },
+  onPeerLeave: (id) => { peerCount = Math.max(0, peerCount - 1); riders.delete(id); elder(`A rider left (${id.slice(0, 6)}). ${peerCount} here now.`) },
   onMessage: (data) => {
     if (data?.t !== 'sky') return
     // fold a remote nudge into the shared local sky — additive, decayed, never
@@ -1772,6 +1851,8 @@ const net = connectRelay(ROOM, {
     // over one authoritative value (there's no server authority to fight over anyway).
     sky.charge = Math.min(1, sky.charge * 0.7 + data.charge * 0.3)
     sky.hue = (sky.hue + (((data.hue - sky.hue + 540) % 360) - 180) * 0.15 + 360) % 360
+    // remember the other rider's cursor + count so we can draw them (see drawRiders)
+    if (data.id != null && data.id !== net.id) riders.set(data.id, { x: data.x, y: data.y, hue: data.hue, d: data.d || 0, t: performance.now() })
   },
   onError: () => elder('Offline — playing solo. That\'s a fully valid way to play.'),
 })
