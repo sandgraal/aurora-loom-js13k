@@ -1,7 +1,7 @@
 {
   "name": "aurora-loom",
   "version": "0.0.1",
-  "description": "js13kgames 2026 entry - theme: Unicorns and Rainbows",
+  "description": "Aurora Loom — a creepy, generative unicorns-and-rainbows game for js13kgames 2026 (Online category)",
   "type": "module",
   "scripts": {
     "dev": "npx --yes http-server -p 8080 .",

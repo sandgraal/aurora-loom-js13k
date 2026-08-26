@@ -1,10 +1,36 @@
 # Aurora Loom
 
 ## What this is
-Pushing what is possible from a single .html, under 13k. Meh, Iunno really I'm trying to make it as auto-generational as possible and let it be as weird or as normal as it wants to be within the framework provided...You drag a light across a night sky; a small wild herd of unicorns is drawn to
-warmth. Avoid the eye at all costs, who know why it seems so creepy. Get enough shared "charge" into the sky and the herd
-crosses to the valley. If other people happen to be playing right now, your
-sky and theirs are the same sky.
+Pushing what is possible from a single .html, under 13k. Meh, Iunno really I'm trying to make it as auto-generational as possible and let it be as weird or as normal as it wants to be within the framework provided...
+
+You drag a light across a night sky. A small wild herd of unicorns is drawn to its
+warmth — and a giant bloodshot eye hangs over everything, watching, weeping acid,
+getting redder the longer it stares. Anything inside your light is shielded from it.
+Gather the herd into the light and walk them past the eye to the valley on the right;
+get **13** across before the eye inflames all the way and takes the sky. Win and it
+goes quiet at dawn; lose and the eye swells up and swallows everything — then a fresh
+sky grows back, a little different. If other people happen to be playing right now,
+your sky and theirs are the same sky.
+
+Almost none of it is hand-authored: the stars, the palette, the eye's veins, the beat,
+and the Elder's lyrics are all generated from the room's seed, so no two skies are the
+same and everyone in a room shares theirs.
+
+## How to play
+- **Drag** (mouse or touch) to move the light and paint the sky brighter.
+- Unicorns drift toward the light. **Whatever's inside the light is safe** — the eye
+  can't take it, and neither can the crusty piles growing along the edges.
+- Steer the herd to the **right edge (the valley)**; each one that crosses counts.
+  You need enough "charge" (built by dragging) for them to cross.
+- The **eye reddens over time, and more every time it eats one** — that's the clock.
+  Get **13** across before it maxes out.
+- It never really ends: each round the sky regrows a little different.
+
+Run it locally (needs a static server, not `file://`, because the dev version is ES
+modules):
+```
+npm run dev
+```
 
 ## What the Online relay actually is
 `spike/relay-spike.mjs` opens two real WebSocket connections to
@@ -36,25 +62,33 @@ isn't needed yet — but if reconnect/backoff handling becomes worth it later,
 that import is free.
 
 ## Build & submit
-
 ```
 npm run build
 ```
 
-Bundles `src/main.js` (+ `src/net.js`), inlines the minified result into a single
-**self-contained** `dist/index.html` (no external fonts, CDNs, or services — per
-the rules), zips it with `zip -9`, and **fails if the zip exceeds 13,312 bytes**.
-Current output: `dist/aurora-loom.zip` ≈ **7.5 KB**. `dist/` and `*.zip` are
+Bundles `src/main.js` (+ `src/net.js`), minifies it, runs it through **Roadroller**
+(a packer that beats plain zip), and inlines the result into a single
+**self-contained** `dist/index.html` — no external fonts, CDNs, or services, per the
+rules. It builds both the plain-minified and the Roadroller-packed variants, zips each
+with `zip -9`, keeps whichever is smaller, and **fails if the zip exceeds 13,312 bytes**
+(falls back to the minified build if Roadroller can't be fetched). Current output:
+`dist/aurora-loom.zip` ≈ **11.6 KB** (~1.7 KB to spare). `dist/` and `*.zip` are
 gitignored — submit the zip plus this public source repo.
 
-## Structure
+Deadline: **13 Sep 2026, 13:00 CEST**. Category: **Online** (on top of Desktop/Mobile).
 
+## Structure
 ```
 index.html          dev entry point (ES modules, for `npm run dev`)
-src/main.js          game loop: input, herd, the watching eye, procedural sky, audio
+src/main.js          the whole game: input + shield, herd, the watching eye, the
+                     corruption, the win/lose arc, procedural sky/lyrics/beat, audio
 src/net.js           relay connection, offline-safe by construction
-build.mjs            bundle + inline + zip + 13KB size gate (`npm run build`)
+build.mjs            bundle + minify + Roadroller + inline + zip + 13KB gate (`npm run build`)
 spike/relay-spike.mjs         standalone protocol test (2 clients, no game code)
 spike/net-integration-test.mjs  same test through the real src/net.js module
 package.json          npm run dev / build / spike / spike:net
 ```
+
+Everything ships in the one bundled `dist/index.html`; `aurora-loom-demo.html` is an
+old standalone mockup from early on (different look, uses web fonts) and is **not**
+the game — kept around only as a scratch artifact.
