@@ -28,9 +28,9 @@ function wBounds() {
 // screen pixel -> world coord (input lands where you actually clicked, at any zoom)
 function toWorld(px, py) { return { x: CX + (px - CX) / zoom, y: CY + (py - CY) / zoom } }
 
-// ---------- live tuning ----------
-// Every knob the simulation reads lives here so the on-screen panel (buildPanel,
-// bottom of file) can reshape the piece while it runs. DEFAULTS backs the reset.
+// ---------- tuning constants ----------
+// Every knob the simulation reads lives here as one baked-in config (these are the
+// values dialled in over development; there is no runtime UI for them).
 const DEFAULTS = {
   floor: 8,    // never fewer than this many unicorns
   trigger: 8,  // a corner turns into a super-pile once this many die in it
@@ -229,6 +229,17 @@ const herd = Array.from({ length: cfg.floor + 1 }, () =>
 let deliveredCount = 0
 let lostCount = 0
 
+// ---------- the game: a soft arc, not levels ----------
+// bloodshot is the doom clock (it climbs the whole time and jumps on every kill).
+// Deliver GOAL unicorns to the valley before it maxes: reach it and the sky lets go
+// (dawn); let it max and the eye takes everything (taken). Either way a fresh sky
+// regenerates. Your only power: the light SHIELDS any unicorn inside its glow —
+// escort them past the eye.
+const GOAL = 13, SHIELD = 66
+let phase = 'play' // 'play' | 'dawn' | 'taken'
+let endT = 0, eyeClose = 0
+const shielded = (u) => light.active && Math.hypot(light.x - u.x, light.y - u.y) < SHIELD
+
 // how many unicorns are actually on the board (not gone, not already delivered)
 function liveCount() {
   let n = 0
@@ -391,7 +402,7 @@ function stepBlobs(dt) {
         u.vx += (dx / d) * g
         u.vy += (dy / d) * g
       }
-      if (d < b.r + 10) { addSplat(u.x, u.y, u.hue); u.gone = true } // consumed
+      if (d < b.r + 10 && !shielded(u)) { addSplat(u.x, u.y, u.hue); u.gone = true } // consumed (unless shielded)
     }
     worldScaleTarget += Math.min(1.2, b.r / (innerWidth * 0.5)) * 0.55
   }
@@ -619,7 +630,7 @@ function stepHerd(dt, now) {
     const [ex, ey] = skyElderPos(now)
     let best = null, bd = 1e9
     for (const u of herd) {
-      if (u.delivered || u.gone || u.sucked) continue
+      if (u.delivered || u.gone || u.sucked || shielded(u)) continue // can't lock what's shielded
       const d = Math.hypot(ex - u.x, ey - u.y)
       if (d < bd) { bd = d; best = u }
     }
@@ -693,9 +704,9 @@ function stepHerd(dt, now) {
     if (u.y < wt) { u.y = wt; u.vy *= -1; splash(u, u.x, wt) }
     if (u.y > wb) { u.y = wb; u.vy *= -1; splash(u, u.x, wb) }
 
-    // wander into the eye's open pupil and it takes you — no warning beyond
-    // the eye itself being there to see
-    if (skyElderOpen(now) > 0.3) {
+    // wander into the eye's open pupil and it takes you — unless it's shielded in your
+    // light, or the round has already resolved
+    if (phase === 'play' && !shielded(u) && skyElderOpen(now) > 0.3) {
       const [ex, ey] = skyElderPos(now)
       if (Math.hypot(ex - u.x, ey - u.y) < cfg.hunger + elderPulse * 10) {
         u.sucked = true
@@ -1034,162 +1045,156 @@ function skyElderOpen(now) {
   return Math.max(0.05, 1 - blink - twitch - squeeze)
 }
 
-function drawSkyElder(now) {
-  const w = Math.min(innerWidth, innerHeight) * 0.72 // giant
-  const [cx, cy] = skyElderPos(now)
-  const pulse = elderPulse
-  const openness = skyElderOpen(now)
-  const bs = bloodshot
-  const throb = 0.6 + 0.4 * Math.sin(heartPhase * Math.PI * 2) // beats with the heart
-
-  ctx.save()
-
-  // --- the eyeball: a wet sclera drawn SOLID so the reds stay red. It floods from a
-  // pale veined white toward furious inflamed red as `bloodshot` climbs. ---
+// trace the almond outline at a given vertical scale (1 = socket / lids fully open,
+// `openness` = the current aperture). Reused for the ball clip, lids and lash line.
+function eyeOutline(cx, cy, w, vs) {
   ctx.beginPath()
   EYE_POINTS.forEach(([px, py], i) => {
-    const x = cx + px * w, y = cy + py * w * 0.5 * openness
-    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y)
+    const x = cx + px * w, y = cy + py * w * 0.5 * vs
+    i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)
   })
   ctx.closePath()
-  const sg = ctx.createRadialGradient(cx, cy, 0, cx, cy, w)
-  sg.addColorStop(0, `hsla(6,${55 + bs * 35}%,${72 - bs * 20}%,0.93)`)
-  sg.addColorStop(0.55, `hsla(3,${65 + bs * 25}%,${52 - bs * 16}%,0.93)`)
-  sg.addColorStop(1, `hsla(1,${75 + bs * 20}%,${34 - bs * 10}%,0.95)`)
-  ctx.fillStyle = sg
-  ctx.fill()
-  ctx.strokeStyle = `hsla(2,75%,${34 - bs * 12}%,0.85)`
-  ctx.lineWidth = 2
-  ctx.stroke()
+}
+let eyeSwell = 1 // >1 in the "taken" ending as the eye swells toward full-screen
 
-  // necrotic bruising along the tear-tracks: mottled sickly blotches that discolor
-  // the lower sclera and trail down where the acid runs. Drawn SOLID (source-over) so
-  // it rots the color rather than glowing; more of them, brighter, as it inflames.
-  const shown = Math.ceil(bruises.length * (0.35 + bs * 0.65))
+function drawSkyElder(now) {
+  const w = Math.min(innerWidth, innerHeight) * 0.72 * eyeSwell
+  const [cx, cy] = skyElderPos(now)
+  const pulse = elderPulse
+  const openness = skyElderOpen(now) * (1 - eyeClose) // dawn forces the lids shut
+  const bs = bloodshot
+  const throb = 0.6 + 0.4 * Math.sin(heartPhase * Math.PI * 2)
+  const hh = w * 0.5, P2 = Math.PI * 2
+  // gaze turn + pupil dilation
+  const gx = Math.max(-1, Math.min(1, (gaze.x - cx) / (w * 0.9))) * w * 0.32
+  const gy = Math.max(-1, Math.min(1, (gaze.y - cy) / (innerHeight * 0.5))) * w * 0.13
+  const dil = pupilDilate, ex = cx + gx, ey = cy + gy
+
+  ctx.save()
+
+  // --- lid base: the whole socket in bruised flesh (this is the "closed eye" skin;
+  //     the open eyeball is drawn on top, leaving flesh as the upper/lower lids) ---
+  eyeOutline(cx, cy, w, 1)
+  ctx.fillStyle = `hsl(${348 + bs * 8},${26 + bs * 12}%,${15 - bs * 3}%)`
+  ctx.fill()
+
+  // --- eyeball, clipped to the current aperture (socket scaled by openness) ---
+  ctx.save()
+  eyeOutline(cx, cy, w, openness)
+  ctx.clip()
+
+  // pale wet sclera — tints redder with bloodshot but stays light enough for veins
+  const sg = ctx.createRadialGradient(cx, cy - hh * 0.2 * openness, hh * 0.12, cx, cy, w)
+  sg.addColorStop(0, `hsl(${18 - bs * 8},${28 + bs * 34}%,${90 - bs * 24}%)`)
+  sg.addColorStop(0.72, `hsl(${8 - bs * 4},${42 + bs * 30}%,${78 - bs * 30}%)`)
+  sg.addColorStop(1, `hsl(3,${55 + bs * 25}%,${58 - bs * 26}%)`)
+  ctx.fillStyle = sg
+  ctx.fillRect(cx - w, cy - hh, w * 2, hh * 2)
+  // upper lid-shadow for roundness
+  const lsh = ctx.createLinearGradient(cx, cy - hh * 0.5 * openness, cx, cy)
+  lsh.addColorStop(0, 'rgba(26,6,10,0.55)')
+  lsh.addColorStop(1, 'rgba(26,6,10,0)')
+  ctx.fillStyle = lsh
+  ctx.fillRect(cx - w, cy - hh, w * 2, hh * 2)
+
+  // bloodshot veins on the white
+  const capA = (0.3 + bs * 0.5) * (0.7 + throb * 0.3)
+  ctx.lineWidth = 0.7 + bs * 1.4
+  for (const cap of caps) {
+    ctx.strokeStyle = `hsla(2,85%,${42 + throb * 10}%,${capA})`
+    ctx.beginPath()
+    cap.forEach(([px, py], i) => { const x = cx + px * w, y = cy + py * w * 0.5 * openness; i ? ctx.lineTo(x, y) : ctx.moveTo(x, y) })
+    ctx.stroke()
+  }
+  // necrotic bruising near the lower-inner corner / tear tracks
+  const shown = Math.ceil(bruises.length * (0.3 + bs * 0.6))
   for (let i = 0; i < shown; i++) {
     const b = bruises[i]
-    const mottle = 0.6 + 0.4 * Math.sin(now * 0.001 + b.ph)
-    const al = (0.08 + bs * 0.32 + weepGlow * 0.2) * mottle
-    const bx = cx + b.x * w, by = cy + b.y * w * 0.7, br = b.r * w
+    const al = (0.1 + bs * 0.3 + weepGlow * 0.2) * (0.6 + 0.4 * Math.sin(now * 0.001 + b.ph))
+    const bx = cx + b.x * w, by = cy + b.y * w * 0.35 * openness + hh * 0.12, br = b.r * w * 0.9
     const bg = ctx.createRadialGradient(bx, by, 0, bx, by, br)
-    bg.addColorStop(0, `hsla(${b.hue},55%,32%,${al})`)
-    bg.addColorStop(1, `hsla(${b.hue},55%,28%,0)`)
+    bg.addColorStop(0, `hsla(${b.hue},50%,34%,${al})`)
+    bg.addColorStop(1, `hsla(${b.hue},50%,30%,0)`)
     ctx.fillStyle = bg
-    ctx.beginPath(); ctx.arc(bx, by, br, 0, Math.PI * 2); ctx.fill()
+    ctx.beginPath(); ctx.arc(bx, by, br, 0, P2); ctx.fill()
   }
 
-  // everything from here glows additively on top of the wet ball
-  ctx.globalCompositeOperation = 'lighter'
-
-  // --- bloodshot capillaries: more of them, thicker, redder, throbbing with the
-  // heart as it inflames. Seeded so a room shares them; kills push fresh veins in. ---
-  const capA = (0.12 + bs * 0.5 + pulse * 0.2) * (0.7 + throb * 0.3)
-  ctx.lineWidth = 0.6 + bs * 1.3
-  for (const cap of caps) {
-    ctx.strokeStyle = `hsla(${2 + bs * 4},85%,${46 + throb * 12}%,${capA})`
-    ctx.beginPath()
-    cap.forEach(([px, py], i) => {
-      const x = cx + px * w, y = cy + py * w * 0.5 * openness
-      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y)
-    })
-    ctx.stroke()
-  }
-
-  // where the eyeball is turned — the pupil rides this toward your light or its prey
-  const dx = gaze.x - cx, dy = gaze.y - cy
-  const gx = Math.max(-1, Math.min(1, dx / (w * 0.9))) * w * 0.3
-  const gy = Math.max(-1, Math.min(1, dy / (innerHeight * 0.5))) * w * 0.16 * openness
-  const dil = pupilDilate
-
-  // veins reach for prey: when it's locked onto a unicorn, engorged veins strain
-  // from the pupil toward it, thickening as the pupil blows open
-  if (eyeTarget) {
-    ctx.strokeStyle = `hsla(2,88%,${46 + throb * 14}%,${0.28 + dil * 0.5})`
-    ctx.lineWidth = 1.2 + dil * 2.4
-    for (let i = 0; i < 4; i++) {
-      const j = (i - 1.5) * 0.05
-      ctx.beginPath()
-      ctx.moveTo(cx + gx * 0.15, cy + gy * 0.15)
-      ctx.quadraticCurveTo(cx + gx * 0.9 + j * w, cy + gy * 0.9, cx + gx * 1.7 + j * w * 1.3, cy + gy * 1.7)
-      ctx.stroke()
-    }
-  }
-
-  // iris fibers — amber, but they flush with the color of the last unicorn it ate
-  const iHue = irisFlush.t > 0 ? irisFlush.hue : 30
-  ctx.strokeStyle = `hsla(${iHue | 0},70%,55%,${0.3 + pulse * 0.4 + irisFlush.t * 0.5})`
+  // --- iris: a real colored disc with a limbal ring + fibers; flushes with the hue
+  //     of the last unicorn it swallowed ---
+  const iHue = irisFlush.t > 0 ? irisFlush.hue : 32, iR = w * 0.25
+  ctx.save(); ctx.translate(ex, ey); ctx.scale(1, openness)
+  const ig = ctx.createRadialGradient(0, 0, iR * 0.16, 0, 0, iR)
+  ig.addColorStop(0, `hsl(${iHue | 0},70%,44%)`)
+  ig.addColorStop(0.6, `hsl(${iHue | 0},76%,30%)`)
+  ig.addColorStop(0.92, `hsl(${iHue | 0},70%,18%)`)
+  ig.addColorStop(1, `hsl(${iHue | 0},60%,9%)`)
+  ctx.fillStyle = ig
+  ctx.beginPath(); ctx.arc(0, 0, iR, 0, P2); ctx.fill()
+  ctx.strokeStyle = `hsla(${iHue | 0},80%,58%,${0.3 + irisFlush.t * 0.4})`
   ctx.lineWidth = 1
-  ctx.save()
-  ctx.translate(cx + gx, cy + gy)
-  ctx.scale(1, openness)
-  const irisR = 9 + dil * 5 + pulse * 4
-  for (let i = 0; i < 14; i++) {
-    const ang = (i / 14) * Math.PI * 2
-    const r0 = 5 + (i % 2) * 1.5
-    ctx.beginPath()
-    ctx.moveTo(Math.cos(ang) * r0, Math.sin(ang) * r0)
-    ctx.lineTo(Math.cos(ang) * irisR, Math.sin(ang) * irisR)
-    ctx.stroke()
-  }
-  // the digested-color flush: a ring of the swallowed hue, fading
-  if (irisFlush.t > 0) {
-    ctx.strokeStyle = `hsla(${irisFlush.hue | 0},90%,60%,${irisFlush.t * 0.7})`
-    ctx.lineWidth = 1.5
-    ctx.beginPath(); ctx.arc(0, 0, irisR * 0.8, 0, Math.PI * 2); ctx.stroke()
-  }
-  ctx.restore()
+  for (let i = 0; i < 22; i++) { const a = i / 22 * P2, r1 = iR * (0.78 + 0.16 * Math.sin(i * 3.7)); ctx.beginPath(); ctx.moveTo(Math.cos(a) * iR * 0.3, Math.sin(a) * iR * 0.3); ctx.lineTo(Math.cos(a) * r1, Math.sin(a) * r1); ctx.stroke() }
+  ctx.strokeStyle = `hsla(${iHue | 0},60%,7%,0.85)`; ctx.lineWidth = iR * 0.07
+  ctx.beginPath(); ctx.arc(0, 0, iR * 0.96, 0, P2); ctx.stroke()
 
-  // the pupil — a burning red iris around an actual dark slit hole, blown wide open
-  // when it's near you or hunting. The hole is drawn SOLID so it reads as a void.
-  ctx.save()
-  ctx.translate(cx + gx, cy + gy)
-  ctx.scale(1, openness)
-  const pr = 2.4 + dil * 4 + pulse * 2, prv = 8 + dil * 3 + pulse * 6
-  // burning red glow around the slit (additive)
-  const pg = ctx.createRadialGradient(0, 0, 0, 0, 0, prv * 1.7)
-  pg.addColorStop(0, `hsla(4,90%,55%,${0.6 + pulse * 0.4})`)
-  pg.addColorStop(1, 'hsla(4,90%,50%,0)')
-  ctx.fillStyle = pg
-  ctx.beginPath(); ctx.arc(0, 0, prv * 1.7, 0, Math.PI * 2); ctx.fill()
-  // the slit itself — solid near-black, a hole in the eye
-  ctx.globalCompositeOperation = 'source-over'
-  ctx.fillStyle = 'hsla(0,60%,4%,0.98)'
-  ctx.beginPath(); ctx.ellipse(0, 0, pr, prv, 0, 0, Math.PI * 2); ctx.fill()
-  // a wet specular glint high on the slit
-  ctx.globalCompositeOperation = 'lighter'
-  ctx.fillStyle = `hsla(0,0%,100%,${0.5 + pulse * 0.35})`
-  ctx.beginPath(); ctx.ellipse(-pr * 0.5, -prv * 0.35, 1.2, 2, 0, 0, Math.PI * 2); ctx.fill()
-  ctx.restore()
-  ctx.globalCompositeOperation = 'lighter'
+  // --- round pupil: dilates from pinprick to blown wide; a red burn behind it when
+  //     inflamed; wet glints from a fixed upper-left light ---
+  const pR = iR * (0.16 + dil * 0.52)
+  if (bs > 0.15) { const rg = ctx.createRadialGradient(0, 0, 0, 0, 0, pR * 1.9); rg.addColorStop(0, `hsla(4,95%,56%,${bs * 0.55})`); rg.addColorStop(1, 'hsla(4,95%,50%,0)'); ctx.fillStyle = rg; ctx.beginPath(); ctx.arc(0, 0, pR * 1.9, 0, P2); ctx.fill() }
+  ctx.fillStyle = '#050205'
+  ctx.beginPath(); ctx.arc(0, 0, pR, 0, P2); ctx.fill()
+  ctx.fillStyle = 'hsla(0,0%,100%,0.9)'
+  ctx.beginPath(); ctx.arc(-iR * 0.16, -iR * 0.16, Math.max(1.4, iR * 0.09), 0, P2); ctx.fill()
+  ctx.fillStyle = 'hsla(0,0%,100%,0.45)'
+  ctx.beginPath(); ctx.arc(iR * 0.1, iR * 0.14, Math.max(0.8, iR * 0.05), 0, P2); ctx.fill()
+  ctx.restore() // iris translate/scale
 
-  // acid tears: sickly wet streaks weeping from the lower lid, brightening with each drop
+  // veins reach for prey
+  if (eyeTarget) {
+    ctx.strokeStyle = `hsla(2,88%,${44 + throb * 14}%,${0.28 + dil * 0.5})`
+    ctx.lineWidth = 1.2 + dil * 2.2
+    for (let i = 0; i < 4; i++) { const j = (i - 1.5) * 0.05; ctx.beginPath(); ctx.moveTo(ex, ey); ctx.quadraticCurveTo(cx + gx * 1.3 + j * w, cy + gy * 1.3, cx + gx * 2 + j * w * 1.3, cy + gy * 2); ctx.stroke() }
+  }
+  ctx.restore() // end aperture clip
+
+  // --- lid details: a dark lash line on the rim, lashes off the upper margin, a
+  //     crease above, and a pink inner canthus ---
+  eyeOutline(cx, cy, w, openness)
+  ctx.strokeStyle = 'hsl(348,32%,7%)'; ctx.lineWidth = 2 + w * 0.004; ctx.stroke()
+  ctx.lineWidth = 1; ctx.strokeStyle = 'hsla(348,30%,5%,0.9)'
+  for (const [px, py] of EYE_POINTS) {
+    if (py > -0.15) continue // upper rim only
+    const bx = cx + px * w, by = cy + py * w * 0.5 * openness
+    ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(bx + px * w * 0.05, by - w * 0.05); ctx.stroke()
+  }
+  ctx.strokeStyle = 'hsla(348,24%,24%,0.5)'; ctx.lineWidth = 1.5
+  ctx.beginPath()
+  ctx.moveTo(cx - w * 0.85, cy - hh * 0.06)
+  ctx.quadraticCurveTo(cx, cy - hh * 0.28 * openness - hh * 0.12, cx + w * 0.85, cy - hh * 0.06)
+  ctx.stroke()
+  ctx.fillStyle = 'hsla(350,60%,42%,0.7)'
+  ctx.beginPath(); ctx.ellipse(cx - w * 0.95, cy, w * 0.04, w * 0.045 * openness + 1.5, 0, 0, P2); ctx.fill()
+
+  // acid tears from the lower lid (additive glow)
+  ctx.globalCompositeOperation = 'lighter'
   const tearA = 0.1 + weepGlow * 0.5
   const tg = ctx.createLinearGradient(cx, cy, cx, cy + w * 0.9)
   tg.addColorStop(0, `hsla(95,90%,62%,${tearA})`)
   tg.addColorStop(1, 'hsla(115,90%,45%,0)')
-  ctx.strokeStyle = tg
-  ctx.lineWidth = 1.6 + weepGlow * 2.2
+  ctx.strokeStyle = tg; ctx.lineWidth = 1.6 + weepGlow * 2.2
   ctx.beginPath()
-  ctx.moveTo(cx - w * 0.05, cy + w * 0.14 * openness)
+  ctx.moveTo(cx - w * 0.05, cy + w * 0.1 * openness)
   ctx.quadraticCurveTo(cx - w * 0.02, cy + w * 0.5, cx - w * 0.05, cy + w * 0.85)
-  ctx.moveTo(cx + w * 0.05, cy + w * 0.14 * openness)
-  ctx.quadraticCurveTo(cx + w * 0.085, cy + w * 0.5, cx + w * 0.06, cy + w * 0.8)
+  ctx.moveTo(cx + w * 0.06, cy + w * 0.1 * openness)
+  ctx.quadraticCurveTo(cx + w * 0.09, cy + w * 0.5, cx + w * 0.06, cy + w * 0.8)
   ctx.stroke()
 
-  // nictitating membrane: a pale film that wipes sideways across the eye now and then
+  // nictitating membrane: a pale film wiping sideways across the aperture now and then
   if (memb > 0 && memb < 1) {
     ctx.globalCompositeOperation = 'source-over'
     ctx.save()
-    ctx.beginPath()
-    EYE_POINTS.forEach(([px, py], i) => {
-      const x = cx + px * w, y = cy + py * w * 0.5 * openness
-      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y)
-    })
-    ctx.closePath()
-    ctx.clip()
-    const ex = cx - w + memb * 2 * w
-    ctx.fillStyle = 'rgba(200,175,175,0.3)'
-    ctx.fillRect(cx - w, cy - w, ex - (cx - w), w * 2)
+    eyeOutline(cx, cy, w, openness); ctx.clip()
+    ctx.fillStyle = 'rgba(200,175,175,0.28)'
+    ctx.fillRect(cx - w, cy - hh, (memb * 2 * w), hh * 2)
     ctx.restore()
   }
 
@@ -1217,6 +1222,15 @@ function drawLightOrb(now) {
   const r = 12 + sky.charge * 18
   ctx.save()
   ctx.globalCompositeOperation = 'lighter'
+  // the shield bubble: anything inside is safe from the eye and the piles
+  const sr = SHIELD + Math.sin(now * 0.006) * 2
+  const sgrad = ctx.createRadialGradient(light.x, light.y, sr * 0.6, light.x, light.y, sr)
+  sgrad.addColorStop(0, 'hsla(190,90%,75%,0)')
+  sgrad.addColorStop(1, 'hsla(190,90%,80%,0.14)')
+  ctx.fillStyle = sgrad
+  ctx.beginPath(); ctx.arc(light.x, light.y, sr, 0, Math.PI * 2); ctx.fill()
+  ctx.strokeStyle = 'hsla(190,90%,82%,0.35)'; ctx.lineWidth = 1
+  ctx.beginPath(); ctx.arc(light.x, light.y, sr, 0, Math.PI * 2); ctx.stroke()
   ctx.shadowBlur = 44
   ctx.shadowColor = `hsl(${sky.hue},95%,60%)`
   const grad = ctx.createConicGradient(now * 0.0009, light.x, light.y)
@@ -1335,6 +1349,13 @@ function drawUnicorn(u) {
   gg.addColorStop(1, 'hsla(0,0%,0%,0)')
   ctx.fillStyle = gg
   ctx.beginPath(); ctx.arc(0, -5, 22, 0, Math.PI * 2); ctx.fill()
+
+  // shielded in the light: a protective ring — the eye and the piles can't touch it
+  if (shielded(u) && !dim) {
+    ctx.strokeStyle = `hsla(190,90%,82%,${0.4 + 0.3 * Math.sin(performance.now() * 0.01 + u.gait)})`
+    ctx.lineWidth = 1.2
+    ctx.beginPath(); ctx.arc(0, -3, 14, 0, Math.PI * 2); ctx.stroke()
+  }
 
   ctx.shadowBlur = dim ? 4 : 9
   ctx.shadowColor = `hsl(${hue},${sat},65%)`
@@ -1549,14 +1570,29 @@ function drawDarkEyes() {
 // like the dark is inhaling. Drawn under the HUD so the text stays readable.
 function drawVignette(now) {
   const breath = 0.5 + 0.5 * Math.sin(now * 0.0004)
+  const dread = bloodshot // the edge bleeds red as the doom clock climbs
   const g = ctx.createRadialGradient(
     innerWidth / 2, innerHeight * 0.46, innerHeight * 0.2,
     innerWidth / 2, innerHeight * 0.5, Math.max(innerWidth, innerHeight) * 0.72
   )
   g.addColorStop(0, 'hsla(0,0%,0%,0)')
-  g.addColorStop(1, `hsla(260,35%,2%,${0.5 + breath * 0.18})`)
+  g.addColorStop(1, `hsla(${260 - dread * 260},${35 + dread * 45}%,2%,${0.5 + breath * 0.18 + dread * 0.16})`)
   ctx.fillStyle = g
   ctx.fillRect(0, 0, innerWidth, innerHeight)
+}
+// the two endings: a warm dawn wash or a red-black swallow, with a caption; then regen
+function drawEnding() {
+  const k = Math.min(1, endT / 2200), dawn = phase === 'dawn'
+  ctx.fillStyle = dawn ? `hsla(42,55%,86%,${k * 0.5})` : `hsla(0,85%,7%,${k * 0.62})`
+  ctx.fillRect(0, 0, innerWidth, innerHeight)
+  ctx.textAlign = 'center'
+  ctx.fillStyle = dawn ? `rgba(60,40,20,${k})` : `rgba(255,215,215,${k})`
+  ctx.font = `italic ${Math.min(innerWidth, innerHeight) * 0.07}px Georgia, serif`
+  ctx.fillText(dawn ? 'the herd crossed' : 'the sky is taken', innerWidth / 2, innerHeight * 0.44)
+  ctx.font = '15px monospace'
+  ctx.fillStyle = dawn ? `rgba(60,40,20,${k * 0.85})` : `rgba(255,195,195,${k * 0.85})`
+  ctx.fillText(dawn ? `${deliveredCount} carried to the valley` : `${lostCount} taken into the dark`, innerWidth / 2, innerHeight * 0.54)
+  ctx.textAlign = 'left'
 }
 
 // ---------- render ----------
@@ -1596,11 +1632,28 @@ function render(now) {
 
   // --- screen overlays ---
   drawVignette(now)
-  ctx.fillStyle = 'rgba(255,255,255,0.6)'
-  ctx.font = '13px monospace'
-  ctx.fillText(
-    `charge ${(sky.charge * 100 | 0)}%   peers ${peerCount}   alive ${liveCount()}   home ${deliveredCount}   taken ${lostCount}`,
-    10, 20)
+  if (phase === 'play') {
+    // minimal ambient HUD — progress toward the goal; the reddening edge carries the danger
+    ctx.fillStyle = 'rgba(240,235,255,0.6)'
+    ctx.font = '13px monospace'
+    ctx.textAlign = 'left'
+    ctx.fillText(`${deliveredCount} / ${GOAL} crossed${peerCount ? '   ·   ' + peerCount + ' riders' : ''}`, 12, 22)
+  } else {
+    drawEnding()
+  }
+}
+
+// wipe the mutable simulation for a fresh round (the room's seeded look persists as
+// its identity; only the palette hue is re-rolled so each attempt feels new)
+function newRound() {
+  phase = 'play'; endT = 0; eyeClose = 0; eyeSwell = 1
+  bloodshot = 0.06; deliveredCount = 0; lostCount = 0
+  worldScale = 1; worldScaleTarget = 1; zoom = 1
+  sky.charge = 0.08; sky.hue = Math.random() * 360 | 0
+  herd.length = 0
+  for (let i = 0; i < cfg.floor + 1; i++) herd.push(spawnUnicorn(Math.random() * innerWidth, Math.random() * innerHeight))
+  blobs.length = 0; acid.length = 0; stains.length = 0; rbDrips.length = 0
+  elder('a new sky. drag to bring color to it')
 }
 
 // ---------- loop ----------
@@ -1662,8 +1715,20 @@ function loop(t) {
   const want = Math.max(near, eyeTarget ? 0.9 : 0)
   pupilDilate += (want - pupilDilate) * 0.08
 
-  // the eye inflames the whole time it watches, and only ebbs a hair — it remembers
-  bloodshot = Math.min(1, Math.max(0, bloodshot + dt * (0.000008 * cfg.rot - 0.0000005)))
+  // the eye inflames the whole time it watches, and only ebbs a hair — it remembers.
+  // This IS the doom clock: reach 1 and the sky is taken.
+  if (phase === 'play') bloodshot = Math.min(1, Math.max(0, bloodshot + dt * (0.000008 * cfg.rot - 0.0000005)))
+
+  // --- the arc: win at GOAL, lose when the eye maxes; play the ending, then regen ---
+  if (phase === 'play') {
+    if (deliveredCount >= GOAL) { phase = 'dawn'; endT = 0 }
+    else if (bloodshot >= 1) { phase = 'taken'; endT = 0 }
+  } else {
+    endT += dt
+    if (phase === 'dawn') { eyeClose = Math.min(1, eyeClose + dt * 0.0005); bloodshot = Math.max(0, bloodshot - dt * 0.0006) }
+    else { eyeSwell = Math.min(3.2, eyeSwell + dt * 0.0009); eyeClose = Math.max(0, eyeClose - dt * 0.001) } // taken: the eye swells to fill the sky
+    if (endT > 6000) newRound()
+  }
   // a visual heartbeat sharing the audio heartbeat's quickening tempo (throbs the veins)
   heartPhase = (heartPhase + dt * 0.001 / Math.max(0.4, 1.6 - pupilDilate * 1.1)) % 1
   irisFlush.t = Math.max(0, irisFlush.t - dt * 0.0016)
@@ -1711,93 +1776,3 @@ const net = connectRelay(ROOM, {
   onError: () => elder('Offline — playing solo. That\'s a fully valid way to play.'),
 })
 elder(logLine('hush'))
-
-// ---------- live tuning panel ----------
-// A small overlay of sliders bound to cfg, so you can reshape the piece as it runs.
-// Built in JS (not markup) so it travels inside the single bundled file. Toggle with
-// the gear button or the H key; it starts closed so it never fights the sky.
-const TUNABLES = [
-  ['floor', 'unicorns (min)', 3, 30, 1],
-  ['trigger', 'pile awakens at', 2, 20, 1],
-  ['hunger', 'eye hunger', 5, 60, 1],
-  ['lure', 'symbol pull', 0, 3, 0.05],
-  ['pull', 'pile pull', 0, 3, 0.05],
-  ['weep', 'acid weeping', 0, 3, 0.05],
-  ['creep', 'pile creep', 0, 3, 0.05],
-  ['zcap', 'zoom-out', 1, 4, 0.05],
-  ['rbow', 'twisted rainbow', 0, 2, 0.05],
-  ['rot', 'bloodshot rate', 0, 4, 0.05],
-  ['vrate', 'voice speed', 0.2, 1, 0.02],
-  ['vpitch', 'voice pitch', 0, 1, 0.02],
-  ['grit', 'voice grit', 0, 1, 0.05],
-]
-function buildPanel() {
-  const style = document.createElement('style')
-  style.textContent =
-    '#ui{position:fixed;top:8px;right:8px;z-index:9;font:11px monospace;color:#cfc8e8}' +
-    '#ui button{background:rgba(10,8,20,.72);color:#cfc8e8;border:1px solid rgba(233,230,247,.22);border-radius:5px;padding:4px 8px;cursor:pointer;font:inherit}' +
-    '#uip{margin-top:6px;width:186px;max-height:calc(100vh - 56px);overflow:auto;padding:6px 10px 10px;background:rgba(8,6,14,.85);border:1px solid rgba(233,230,247,.16);border-radius:7px}' +
-    '#uip label{display:grid;grid-template-columns:1fr auto;gap:1px 6px;margin:8px 0 0}' +
-    '#uip b{color:#b39cf2;font-weight:600}' +
-    '#uip input{grid-column:1/3;width:100%;accent-color:#a06cf0;margin:2px 0 0}' +
-    '#uip select{grid-column:1/3;width:100%;margin:3px 0 0;background:rgba(10,8,20,.7);color:#cfc8e8;border:1px solid rgba(233,230,247,.2);border-radius:4px;font:inherit;padding:2px}' +
-    '#uip .r{width:100%;margin-top:10px}'
-  document.head.append(style)
-
-  const box = document.createElement('div'); box.id = 'ui'
-  const gear = document.createElement('button'); gear.textContent = '⚙'; gear.title = 'tune (H)'
-  const panel = document.createElement('div'); panel.id = 'uip'
-  let open = false
-  const setOpen = (v) => { open = v; panel.style.display = v ? 'block' : 'none'; gear.style.opacity = v ? 1 : 0.55 }
-  gear.onclick = () => setOpen(!open)
-  addEventListener('keydown', (e) => { if (e.key === 'h' || e.key === 'H') setOpen(!open) })
-
-  const setters = []
-  for (const [key, label, min, max, step] of TUNABLES) {
-    const row = document.createElement('label')
-    const cap = document.createElement('span'); cap.textContent = label
-    const val = document.createElement('b')
-    const s = document.createElement('input')
-    s.type = 'range'; s.min = min; s.max = max; s.step = step; s.value = cfg[key]
-    const show = () => { val.textContent = step < 1 ? (+cfg[key]).toFixed(2) : cfg[key] }
-    s.oninput = () => { cfg[key] = +s.value; show() }
-    show()
-    row.append(cap, val, s); panel.append(row)
-    setters.push(() => { s.value = cfg[key]; show() })
-  }
-
-  // voice picker — choose any installed voice directly. Value is the true index
-  // into voiceList; english voices are floated to the top for convenience.
-  const vrow = document.createElement('label')
-  const vcap = document.createElement('span'); vcap.textContent = 'voice'
-  const sel = document.createElement('select')
-  const fillVoices = () => {
-    sel.innerHTML = ''
-    const order = [...voiceList.keys()].sort((a, b) => {
-      const ea = /^en/i.test(voiceList[a].lang), eb = /^en/i.test(voiceList[b].lang)
-      return ea === eb ? 0 : ea ? -1 : 1
-    })
-    for (const i of order) {
-      const v = voiceList[i]
-      const o = document.createElement('option')
-      o.value = i; o.textContent = `${v.name} (${v.lang})`
-      if (v === theVoice) o.selected = true
-      sel.append(o)
-    }
-  }
-  sel.onchange = () => { theVoice = voiceList[+sel.value]; voicePinned = true }
-  voiceSelectRefresh = fillVoices
-  fillVoices()
-  vrow.append(vcap, sel); panel.append(vrow)
-
-  const reset = document.createElement('button'); reset.textContent = 'reset'; reset.className = 'r'
-  reset.onclick = () => {
-    Object.assign(cfg, DEFAULTS); for (const f of setters) f()
-    voicePinned = false; loadVoices() // re-pick the auto voice and refresh the dropdown
-  }
-  panel.append(reset)
-
-  box.append(gear, panel); document.body.append(box)
-  setOpen(false)
-}
-buildPanel()
