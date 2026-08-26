@@ -89,6 +89,4 @@ spike/net-integration-test.mjs  same test through the real src/net.js module
 package.json          npm run dev / build / spike / spike:net
 ```
 
-Everything ships in the one bundled `dist/index.html`; `aurora-loom-demo.html` is an
-old standalone mockup from early on (different look, uses web fonts) and is **not**
-the game — kept around only as a scratch artifact.
+Everything ships in the one bundled `dist/index.html`.
