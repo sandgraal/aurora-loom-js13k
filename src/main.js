@@ -69,12 +69,14 @@ function mulberry32(a) {
   }
 }
 const rng = mulberry32(strSeed(ROOM))
+// tiny helper: build a seeded array of n things (used all over for the generated world)
+const gen = (n, f) => Array.from({ length: n }, f)
 // starfield: positions as viewport fractions so they survive resize
-const stars = Array.from({ length: 150 }, () => ({
+const stars = gen(150, () => ({
   x: rng(), y: rng() * 0.95, r: 0.4 + rng() * 1.4, tw: rng() * 6.28, sp: 0.5 + rng() * 2.2,
 }))
 // a few slow nebula bands, each with its own drift and hue
-const bands = Array.from({ length: 3 }, () => ({
+const bands = gen(3, () => ({
   hue: rng() * 360, y: 0.12 + rng() * 0.6, amp: 0.05 + rng() * 0.1,
   ph: rng() * 6.28, sp: 0.00002 + rng() * 0.00004,
 }))
@@ -92,12 +94,12 @@ function genCap() {
   }
   return pts
 }
-const caps = Array.from({ length: 6 + (rng() * 6 | 0) }, genCap)
+const caps = gen(6 + (rng() * 6 | 0), genCap)
 // necrotic bruise blotches that bloom along the acid tear-tracks — sickly green,
 // jaundice-yellow and bruise-purple, clustered near the inner-lower eye and trailing
 // down where the acid runs. Seeded (eye-local coords: x in -1..1, y downward), so a
 // room shares the rot. Revealed + brightened by `bloodshot` — the rot spreads.
-const bruises = Array.from({ length: 12 + (rng() * 8 | 0) }, () => ({
+const bruises = gen(12 + (rng() * 8 | 0), () => ({
   x: (rng() < 0.5 ? -1 : 1) * (0.02 + rng() * 0.2),
   y: 0.1 + rng() * 0.75,
   r: 0.05 + rng() * 0.15,
@@ -108,7 +110,7 @@ const bruises = Array.from({ length: 12 + (rng() * 8 | 0) }, () => ({
 // Which bands are necrotic, their phases, and how wrong each hue is come from the
 // seed, so a room shares its rainbow. Presence is painted in by sky.charge.
 const RB_BANDS = 7
-const rbSeed = Array.from({ length: RB_BANDS }, () => ({
+const rbSeed = gen(RB_BANDS, () => ({
   ph: rng() * 6.28,
   rot: rng() < 0.28,             // this band is necrotic (dark, desaturated, broken)
   hueShift: (rng() - 0.5) * 44,  // each band's hue is a little wrong / out of order
@@ -362,7 +364,7 @@ function addSplat(x, y, hue) {
   b.r = 12 + Math.sqrt(b.count) * 7
   if (!b.sup && b.count >= cfg.trigger) {
     b.sup = true
-    elder('A blot on the glass has started to move on its own.')
+    elder(logLine('wake'))
   }
 }
 // a unicorn hitting the edge — leave a mark with a chance that scales with impact speed
@@ -644,7 +646,7 @@ function stepHerd(dt, now) {
         caps.push(genCap())         // a fresh vein bursts across the white
         if (caps.length > 30) caps.shift()
         u.gone = true               // topUpHerd() walks a stranger in to replace it
-        elder(`The eye took one. Its color bleeds into the glass. (${lostCount} taken)`)
+        elder(`${logLine('take')} (${lostCount} taken)`)
       }
       continue
     }
@@ -708,7 +710,7 @@ function stepHerd(dt, now) {
       deliveredCount++
       spawnDeliveryBurst(u.x, u.y)
       u.gone = true
-      elder(`A unicorn slipped across to the valley. ${deliveredCount} have made it.`)
+      elder(`${logLine('cross')} — ${deliveredCount} so far`)
     }
   }
 }
@@ -719,36 +721,44 @@ function stepHerd(dt, now) {
 // read aloud with the browser's built-in speech synthesis, slowed and pitched
 // down for the drawl, and always shown as text too — TTS voices (and this
 // preview sandbox specifically) aren't guaranteed to be available everywhere.
-// A pool of off-kilter, half-sense lines. Each verse pulls a random handful in a
-// random order, so it's never quite the same twice and never quite adds up.
-const LYRIC_POOL = [
-  "i keep your colors in a jar behind my teeth",
-  "count the legs again... you'll get it wrong again",
-  "the moon still owe me seven horses and it know",
-  "every rainbow is a door i already shut",
-  "little light, little light, why you shakin' at me",
-  "i ate a tuesday once, it tasted like your name",
-  "the ground is just a lid, baby, the ground is just a lid",
-  "been watchin' since before you had a face to lose",
-  "don't go where the dark get thick, that's where i keep the rest",
-  "your rainbow's on my tongue and it forgot the way back home",
-  "i blink, and a hundred years fall off the shelf",
-  "the horses know my name but they won't say it twice",
-  "i'm not up in the sky... the sky is up in me",
-  "you feed me pretty colors, i give you back the cold",
-  "somewhere you already gone — i saw it, it was fine",
-  "the stars is just the holes i left in somethin' bigger",
-  "warm ones taste like tuesday, grey ones taste like you",
-  "i had a body once, i left it where you can't",
-  "keep draggin' that light, keep drawin' me a mouth",
-  "shhh... the valley only hungry 'cause i told it to be",
-]
-function shuffled(arr) {
-  const a = arr.slice()
-  for (let i = a.length - 1; i > 0; i--) { const j = Math.random() * (i + 1) | 0;[a[i], a[j]] = [a[j], a[i]] }
-  return a
+// The Elder's lines are GENERATED, not stored: a handful of skeletons filled from
+// small word-banks. Thousands of unique half-sense lines out of a few hundred bytes,
+// and it never quite adds up — which is the point. (Packs far better than 20 fixed
+// sentences, too.) Banks keyed by a letter; {X} slots in the templates pull from them.
+const pick = (a) => a[Math.random() * a.length | 0]
+const BANK = {
+  N: ['color', 'name', 'face', 'light', 'rainbow', 'shadow', 'mouth'],
+  P: ['teeth', 'tongue', 'throat', 'hands', 'eye'],
+  V: ['jar', 'hole', 'lid', 'glass', 'dark'],
+  C: ['moon', 'sky', 'dark', 'valley', 'night'],
+  K: ['seven', 'a hundred', 'nine', 'all your'],
+  B: ['horses', 'unicorns', 'little ones', 'warm ones', 'grey ones'],
+  T: ['tuesday', 'winter', 'sunday', 'nightfall'], // bare so "a {T}" always reads
+  A: ['pretty', 'warm', 'grey', 'cold', 'quiet', 'wrong'],
 }
-let verseSet = []      // the lines chosen for the current verse
+const TPL = [
+  'i keep your {N} in a {V} behind my {P}',
+  'the {C} still owe me {K} {B} and it know',
+  "count the {P} again... you'll get it wrong again",
+  'i ate a {T} once, it tasted like your {N}',
+  'the {N} is just a {V}, baby, the {N} is just a {V}',
+  "the {B} know my name but they won't say it twice",
+  "i'm not up in the {C}... the {C} is up in me",
+  'you feed me {A} {N}, i give you back the {A}',
+  "keep draggin' that {N}, drawin' me {P}",
+  "little {N}, little {N}, why you shakin' at me",
+]
+const fill = (s) => s.replace(/\{(\w)\}/g, (_, k) => pick(BANK[k]))
+const makeLine = () => fill(pick(TPL))
+// the Sky Elder's flavor narration is generated too (functional/relay lines stay literal)
+const LOG = {
+  wake: ["a {N} in the corner started movin'", 'somethin\' woke up hungry'],
+  take: ['gone — the eye keeps the {N}', 'one less; it drinks the {N}'],
+  cross: ['one slipped to the valley', "gone across, don't wave back"],
+  hush: ['a quiet {C}, drag to color it', 'the {C} is watching, paint it'],
+}
+const logLine = (k) => fill(pick(LOG[k]))
+let verseSet = []      // the lines generated for the current verse
 let currentLine = ''
 let captionTimer = 0
 let actx = null
@@ -927,9 +937,16 @@ function heartbeat() {
 // sub-bass (A-minor i → b7 feel), a fuller snare on the backbeat, swung hats, and a
 // sparse dissonant lead motif every other bar for unease.
 const VERSE_BPM = 76, VERSE_STEP = 60 / VERSE_BPM / 2
-const KICKS = [1, 0, 0, 0, 0, 0, 1, 0]
-const BASS_HZ = [55, 0, 0, 82, 0, 0, 49, 0] // A1 . . A2 . . G1 .
-const LEAD_HZ = [466, 622, 440, 587]        // Bb4 D#5 A4 D5 — deliberately unresolved
+// The beat is seeded per room: a root note and everything else drawn from a minor
+// scale, so every room grooves a little differently. note() is equal-temperament
+// from the root; the kick placement, bass movement and lead motif are all rng'd.
+const B_ROOT = [55, 49, 58, 65][rng() * 4 | 0]  // A1 / G1 / Bb1 / C2
+const MINSCALE = [0, 3, 5, 7, 10]               // minor pentatonic
+const note = (semi, oct) => B_ROOT * 2 ** ((semi + oct * 12) / 12)
+const sdeg = () => MINSCALE[rng() * MINSCALE.length | 0]
+const KICKS = [1, 0, 0, rng() < 0.35 ? 1 : 0, rng() < 0.2 ? 1 : 0, 0, rng() < 0.75 ? 1 : 0, 0]
+const BASS_HZ = [note(0, 0), 0, 0, rng() < 0.6 ? note(sdeg(), 1) : 0, 0, 0, note(sdeg(), 0), 0]
+const LEAD_HZ = gen(3 + (rng() * 2 | 0), () => note(sdeg(), 2)) // high, unresolved motif
 let verseOn = false, nextStep = 0, stepIdx = 0, verseLines = 0, barCount = 0, lastVerseAt = -Infinity
 function scheduleVerse() {
   if (!verseOn) return
@@ -975,7 +992,7 @@ function startVerse() {
   if (!actx) return
   droneStart()
   if (!hbStarted) { hbStarted = true; hbNext = actx.currentTime; heartbeat() }
-  verseSet = shuffled(LYRIC_POOL).slice(0, 6) // a fresh random handful, random order
+  verseSet = Array.from({ length: 6 }, makeLine) // six freshly generated lines
   verseOn = true
   stepIdx = 0
   verseLines = 0
@@ -989,10 +1006,10 @@ function startVerse() {
 // herd — it only watches — and it brightens for a moment every time elder()
 // logs something (including its own verse), so the log text and this
 // presence are the same heartbeat. Dragging now also cues it to start rapping.
-const EYE_POINTS = [
-  [-1, 0], [-0.6, -0.35], [-0.2, -0.5], [0.2, -0.5], [0.6, -0.35], [1, 0],
-  [0.6, 0.35], [0.2, 0.5], [-0.2, 0.5], [-0.6, 0.35],
-]
+// the almond outline, computed not stored: an ellipse whose aspect (how tall the eye
+// is) is seeded, so the eye's shape varies a little per room. Eye-local coords.
+const EYE_ASPECT = 0.46 + rng() * 0.1
+const EYE_POINTS = gen(12, (_, i) => { const t = i / 12 * 6.2832; return [Math.cos(t), Math.sin(t) * EYE_ASPECT] })
 // where the eye's pupil actually is right now, and how open it is — shared
 // with stepHerd so "wander too close" checks the same point that's drawn
 function skyElderPos(now) {
@@ -1693,7 +1710,7 @@ const net = connectRelay(ROOM, {
   },
   onError: () => elder('Offline — playing solo. That\'s a fully valid way to play.'),
 })
-elder('A quiet sky. Drag to bring color to it.')
+elder(logLine('hush'))
 
 // ---------- live tuning panel ----------
 // A small overlay of sliders bound to cfg, so you can reshape the piece as it runs.
