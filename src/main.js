@@ -1756,7 +1756,8 @@ function newRound() {
 // ---------- loop ----------
 let last = performance.now()
 function loop(t) {
-  const dt = min(32, t - last)
+  const elapsed = t - last
+  const dt = min(32, elapsed)
   last = t
   elderPulse = max(0, elderPulse - dt * 0.0012)
   captionTimer = max(0, captionTimer - dt * 0.00032)
@@ -1827,7 +1828,7 @@ function loop(t) {
 
   // --- the arc: win at GOAL, lose when the eye maxes; play the ending, then regen ---
   if (phase === 'play') {
-    roundT += dt
+    roundT += elapsed
     if (deliveredCount >= GOAL) {
       phase = 'dawn'; endT = 0; saveBest()
       const [, wr2, wt2, wb2] = wBounds()
