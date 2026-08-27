@@ -26,19 +26,36 @@ function makeHtml(body) {
     body +
     '</script></body></html>'
 }
-// write the given html to dist/index.html and zip it to dist/<name>.zip; return bytes
+// write the given html to dist/index.html and zip it to dist/<name>.zip; return bytes.
+// After `zip -9` we re-deflate the archive with advzip (zopfli-based): same zip
+// format, better-searched DEFLATE stream — typically recovers 30–100 free bytes.
+// Wrapped in try/catch so a machine without advzip still builds.
 function zipHtml(html, name) {
   writeFileSync('dist/index.html', html)
   rmSync(`dist/${name}.zip`, { force: true })
   execSync(`cd dist && zip -9 -X ${name}.zip index.html`, { stdio: 'ignore' })
+  try { execSync(`npx --yes advzip-bin -z -4 -i 64 dist/${name}.zip`, { stdio: 'ignore' }) } catch (e) { /* keep plain zip */ }
   return statSync(`dist/${name}.zip`).size
 }
 
 // 1. bundle src/main.js (which imports src/net.js) into a single minified IIFE
-const js = execSync('npx --yes esbuild src/main.js --bundle --minify --format=iife', {
+let js = execSync('npx --yes esbuild src/main.js --bundle --minify --format=iife', {
   encoding: 'utf8',
   maxBuffer: 1 << 24,
 })
+
+// 1b. second minifier pass: terser squeezes 1–3% past esbuild (multi-pass compress,
+// unsafe-but-sound-here transforms; no property mangling — canvas/DOM names must
+// survive). Falls back to the esbuild output if terser can't run.
+try {
+  writeFileSync('dist/_bundle.js', js)
+  execSync('npx --yes terser dist/_bundle.js -o dist/_terser.js -c passes=3,unsafe=true,pure_getters=true -m', { stdio: 'inherit' })
+  const t = readFileSync('dist/_terser.js', 'utf8')
+  if (t.length && t.length < js.length) js = t
+  rmSync('dist/_terser.js', { force: true })
+} catch (e) {
+  console.warn('  (terser unavailable — using esbuild minify only:', e.message, ')')
+}
 
 // 2. candidate A — plain minified
 let best = { html: makeHtml(js), zip: zipHtml(makeHtml(js), 'min'), packer: 'minify' }
@@ -47,9 +64,12 @@ best.zipPath = 'dist/aurora-loom.zip'
 
 // 3. candidate B — Roadroller-packed (self-evaluating). Skipped gracefully if it
 //    can't run. Only adopted if its zip actually comes out smaller.
+//    Default is -O1 (seconds, for iteration). `RR=2 npm run build` runs the full
+//    -O2 parameter search (minutes) — use for release/submission builds only.
+const rrOpt = process.env.RR === '2' ? '-O2' : '-O1'
 try {
   writeFileSync('dist/_bundle.js', js)
-  execSync('npx --yes roadroller dist/_bundle.js -o dist/_packed.js -O1', { stdio: 'inherit' })
+  execSync(`npx --yes roadroller dist/_bundle.js -o dist/_packed.js ${rrOpt}`, { stdio: 'inherit' })
   const packed = readFileSync('dist/_packed.js', 'utf8')
   if (packed.length) {
     const rrHtml = makeHtml(packed)

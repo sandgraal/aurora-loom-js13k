@@ -29,24 +29,11 @@ function wBounds() {
 function toWorld(px, py) { return { x: CX + (px - CX) / zoom, y: CY + (py - CY) / zoom } }
 
 // ---------- tuning constants ----------
-// Every knob the simulation reads lives here as one baked-in config (these are the
-// values dialled in over development; there is no runtime UI for them).
-const DEFAULTS = {
-  floor: 8,    // never fewer than this many unicorns
-  trigger: 8,  // a corner turns into a super-pile once this many die in it
-  hunger: 15,  // the eye's reach — how close is fatal
-  lure: 1,     // how hard the cross/horns tug the herd
-  pull: 1,     // how hard super-piles drag the living in
-  weep: 1,     // how often the eye weeps acid
-  creep: 1,    // how far piles spread inward as they grow
-  zcap: 2.4,   // how far the world is allowed to zoom out
-  rbow: 1,     // the twisted rainbow's presence/intensity
-  rot: 1,      // how fast the eye inflames (bloodshot ramp speed)
-  vrate: 0.5,  // the eye's voice: speed (low = slow, laid-back drawl)
-  vpitch: 0.18,// the eye's voice: pitch (low = deep/warm)
-  grit: 0.6,   // gravel under the voice: growl + vinyl-crackle amount
-}
-const cfg = { ...DEFAULTS }
+// Knobs are baked in at their call sites (dialled in over development; no runtime
+// UI). Old knob values for reference: floor 8 · trigger 8 · hunger 15 · zcap 2.4
+// · vrate 0.5 · vpitch 0.18 · grit 0.6 · lure/pull/weep/creep/rbow/rot 1.
+const { sin, cos, min, max, hypot, random, sqrt, abs, atan2, ceil, pow, imul, PI } = Math
+const P2 = PI * 2
 
 // ---------- deterministic per-room world ----------
 // One seed for everyone in the same relay room, so the stars, the nebula bands,
@@ -57,14 +44,14 @@ const cfg = { ...DEFAULTS }
 const ROOM = todaysRoom()
 function strSeed(s) {
   let h = 1779033703 ^ s.length
-  for (let i = 0; i < s.length; i++) { h = Math.imul(h ^ s.charCodeAt(i), 3432918353); h = h << 13 | h >>> 19 }
+  for (let i = 0; i < s.length; i++) { h = imul(h ^ s.charCodeAt(i), 3432918353); h = h << 13 | h >>> 19 }
   return h >>> 0
 }
 function mulberry32(a) {
   return function () {
     a |= 0; a = a + 0x6D2B79F5 | 0
-    let t = Math.imul(a ^ a >>> 15, 1 | a)
-    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t
+    let t = imul(a ^ a >>> 15, 1 | a)
+    t = t + imul(t ^ t >>> 7, 61 | t) ^ t
     return ((t ^ t >>> 14) >>> 0) / 4294967296
   }
 }
@@ -90,7 +77,7 @@ function genCap() {
     pts.push([x, y])
     ang += (rng() - 0.5) * 0.9
     const st = 0.12 + rng() * 0.1
-    x += Math.cos(ang) * st; y += Math.sin(ang) * st * 0.5
+    x += cos(ang) * st; y += sin(ang) * st * 0.5
   }
   return pts
 }
@@ -188,7 +175,7 @@ addEventListener('touchmove', (e) => { onMove(e); if (light.active) e.preventDef
 addEventListener('touchend', onUp)
 
 // ---------- herd (boid-lite) ----------
-// Never fewer than cfg.floor unicorns present. Every death (to the eye, or to a
+// Never fewer than 8 unicorns present. Every death (to the eye, or to a
 // super-pile) is topped up the same frame from a fresh spawn at the world's edge,
 // so the sky is never empty — they just keep coming, each one stranger.
 
@@ -199,12 +186,12 @@ addEventListener('touchend', onUp)
 // and reaches a different length. Always unmistakably a unicorn; never the
 // same unicorn twice.
 function spawnUnicorn(x, y) {
-  const R = Math.random
+  const R = random
   const wild = R()
   return {
     x, y, vx: 0, vy: 0,
     hue: R() * 360,
-    delivered: false, sucked: false, suckT: 0, gone: false,
+    sucked: false, suckT: 0, gone: false,
     scale: 0.6 + R() * 1.3,
     spotHue: R() * 360,
     hornCurl: R() < 0.5 ? 1 : -1,
@@ -224,8 +211,8 @@ function spawnUnicorn(x, y) {
     ]),
   }
 }
-const herd = Array.from({ length: cfg.floor + 1 }, () =>
-  spawnUnicorn(Math.random() * innerWidth, Math.random() * innerHeight))
+const herd = Array.from({ length: 9 }, () =>
+  spawnUnicorn(random() * innerWidth, random() * innerHeight))
 let deliveredCount = 0
 let lostCount = 0
 
@@ -238,7 +225,7 @@ let lostCount = 0
 const GOAL = 13, SHIELD = 66
 let phase = 'play' // 'play' | 'dawn' | 'taken'
 let endT = 0, eyeClose = 0
-const shielded = (u) => light.active && Math.hypot(light.x - u.x, light.y - u.y) < SHIELD
+const shielded = (u) => light.active && hypot(light.x - u.x, light.y - u.y) < SHIELD
 // title/how-to intro (fades on the first drag), a saved personal best, and the other
 // riders currently in this sky (their cursors, for the Online layer)
 let started = false, introA = 1, best = 0
@@ -246,21 +233,21 @@ try { best = +localStorage.getItem('al_best') || 0 } catch (e) { /* private wind
 function saveBest() { if (deliveredCount > best) { best = deliveredCount; try { localStorage.setItem('al_best', best) } catch (e) { /* ignore */ } } }
 const riders = new Map() // id -> {x,y,hue,d,t}
 
-// how many unicorns are actually on the board (not gone, not already delivered)
+// how many unicorns are actually on the board
 function liveCount() {
   let n = 0
-  for (const u of herd) if (!u.gone && !u.delivered) n++
+  for (const u of herd) if (!u.gone) n++
   return n
 }
 // spawn fresh ones at the world edge until we're back to the floor. Called every
 // frame — the moment one dies or crosses home, another walks in from the dark.
 function topUpHerd() {
   let guard = 0
-  while (liveCount() < cfg.floor && guard++ < 30) {
+  while (liveCount() < 8 && guard++ < 30) {
     const [wl, wr, wt, wb] = wBounds()
-    const edge = Math.random()
+    const edge = random()
     const x = edge < 0.5 ? wl + 8 : wr - 8
-    const y = wt + 20 + Math.random() * (wb - wt - 40)
+    const y = wt + 20 + random() * (wb - wt - 40)
     // reuse a gone slot if there is one, else grow the array
     const slot = herd.find((u) => u.gone)
     const born = spawnUnicorn(x, y)
@@ -279,12 +266,12 @@ const lures = [
 ]
 function nearestLure(x, y) {
   let best = null, bd = 1e9
-  for (const L of lures) { const d = Math.hypot(L.x - x, L.y - y); if (d < bd) { bd = d; best = L } }
+  for (const L of lures) { const d = hypot(L.x - x, L.y - y); if (d < bd) { bd = d; best = L } }
   return [best, bd]
 }
 function drawLures(now) {
   for (const L of lures) {
-    const pulse = 0.5 + 0.5 * Math.sin(now * 0.0016 + L.ph)
+    const pulse = 0.5 + 0.5 * sin(now * 0.0016 + L.ph)
     ctx.save()
     ctx.globalCompositeOperation = 'lighter'
     ctx.translate(L.x, L.y)
@@ -335,7 +322,7 @@ function blobPos(b) {
 function toPerimeter(x, y) {
   const [l, r, tp, bt] = wBounds()
   const dl = x - l, dr = r - x, dtp = y - tp, dbt = bt - y
-  const m = Math.min(dl, dr, dtp, dbt)
+  const m = min(dl, dr, dtp, dbt)
   const fx = (r - l) ? (x - l) / (r - l) : 0.5, fy = (bt - tp) ? (y - tp) / (bt - tp) : 0.5
   if (m === dtp) return [0, fx]
   if (m === dbt) return [1, fx]
@@ -346,7 +333,7 @@ function nearestBlob(x, y) {
   let best = null, bd = MERGE_DIST
   for (const b of blobs) {
     const [ax, ay] = blobPos(b)
-    const d = Math.hypot(ax - x, ay - y)
+    const d = hypot(ax - x, ay - y)
     if (d < bd) { bd = d; best = b }
   }
   return best
@@ -366,28 +353,28 @@ function addSplat(x, y, hue) {
   }
   const [, , nx, ny] = blobPos(b)
   const tx = -ny, ty = nx // tangent along the edge
-  const spread = (8 + Math.sqrt(b.count) * 6) * cfg.creep
-  const inward = 5 + Math.pow(Math.random(), 1.7) * spread
-  const along = (Math.random() - 0.5) * (20 + spread * 1.4)
+  const spread = 8 + sqrt(b.count) * 6
+  const inward = 5 + pow(random(), 1.7) * spread
+  const along = (random() - 0.5) * (20 + spread * 1.4)
   b.husks.push({
     ox: nx * inward + tx * along,
     oy: ny * inward + ty * along,
-    r: 4 + Math.random() * 5,
+    r: 4 + random() * 5,
     hue: b.sup ? b.hue : hue,
   })
   if (b.husks.length > 70) b.husks.shift() // draw-list cap; count keeps climbing
   b.count++
-  b.hue = (b.hue + 18 + Math.random() * 24) % 360 // replicate + change each addition
-  b.r = 12 + Math.sqrt(b.count) * 7
-  if (!b.sup && b.count >= cfg.trigger) {
+  b.hue = (b.hue + 18 + random() * 24) % 360 // replicate + change each addition
+  b.r = 12 + sqrt(b.count) * 7
+  if (!b.sup && b.count >= 8) {
     b.sup = true
     elder(logLine('wake'))
   }
 }
 // a unicorn hitting the edge — leave a mark with a chance that scales with impact speed
 function splash(u, x, y) {
-  const sp = Math.hypot(u.vx, u.vy)
-  if (Math.random() < Math.min(0.9, sp * 0.15)) addSplat(x, y, u.hue)
+  const sp = hypot(u.vx, u.vy)
+  if (random() < min(0.9, sp * 0.15)) addSplat(x, y, u.hue)
 }
 // super blobs pull the living in, eat them, and push the world outward
 function stepBlobs(dt) {
@@ -397,22 +384,22 @@ function stepBlobs(dt) {
     const b = blobs[bi]
     if (!b.sup) continue
     const [ax, ay] = blobPos(b)
-    b.pull = Math.min(1, b.pull + dt * 0.0004)
+    b.pull = min(1, b.pull + dt * 0.0004)
     const reach = b.r + 150
     for (const u of herd) {
-      if (u.gone || u.delivered || u.sucked) continue
+      if (u.gone || u.sucked) continue
       const dx = ax - u.x, dy = ay - u.y
-      const d = Math.hypot(dx, dy) || 1
+      const d = hypot(dx, dy) || 1
       if (d < reach) {
-        const g = (1 - d / reach) * 0.006 * b.pull * dt * cfg.pull
+        const g = (1 - d / reach) * 0.006 * b.pull * dt
         u.vx += (dx / d) * g
         u.vy += (dy / d) * g
       }
       if (d < b.r + 10 && !shielded(u)) { addSplat(u.x, u.y, u.hue); u.gone = true } // consumed (unless shielded)
     }
-    worldScaleTarget += Math.min(1.2, b.r / (innerWidth * 0.5)) * 0.55
+    worldScaleTarget += min(1.2, b.r / (innerWidth * 0.5)) * 0.55
   }
-  if (worldScaleTarget > cfg.zcap) worldScaleTarget = cfg.zcap
+  if (worldScaleTarget > 2.4) worldScaleTarget = 2.4
 }
 function drawBlobs(now) {
   for (const b of blobs) {
@@ -426,9 +413,9 @@ function drawBlobs(now) {
       ctx.shadowColor = `hsla(${b.hue | 0},85%,48%,0.7)`
       ctx.beginPath()
       for (let k = 0; k <= 20; k++) {
-        const a = (k / 20) * Math.PI * 2
-        const rr = b.r * (0.72 + 0.13 * Math.sin(a * 3 + now * 0.003 + b.t * 9))
-        const px = ax + Math.cos(a) * rr, py = ay + Math.sin(a) * rr
+        const a = (k / 20) * P2
+        const rr = b.r * (0.72 + 0.13 * sin(a * 3 + now * 0.003 + b.t * 9))
+        const px = ax + cos(a) * rr, py = ay + sin(a) * rr
         k ? ctx.lineTo(px, py) : ctx.moveTo(px, py)
       }
       ctx.closePath(); ctx.fill()
@@ -440,7 +427,7 @@ function drawBlobs(now) {
       ctx.fillStyle = `hsla(${h.hue | 0},70%,${b.sup ? 58 : 46}%,${b.sup ? 0.75 : 0.5})`
       ctx.shadowBlur = b.sup ? 10 : 4
       ctx.shadowColor = `hsla(${h.hue | 0},80%,55%,0.6)`
-      ctx.beginPath(); ctx.arc(ax + h.ox, ay + h.oy, h.r, 0, Math.PI * 2); ctx.fill()
+      ctx.beginPath(); ctx.arc(ax + h.ox, ay + h.oy, h.r, 0, P2); ctx.fill()
     }
     ctx.restore()
   }
@@ -456,20 +443,20 @@ let weepT = 700, weepGlow = 0
 function stepAcid(dt, now) {
   const [ex, ey] = skyElderPos(now)
   weepT -= dt
-  weepGlow = Math.max(0, weepGlow - dt * 0.0006)
+  weepGlow = max(0, weepGlow - dt * 0.0006)
   if (weepT <= 0) {
     // weeps faster when agitated, and scaled by the acid-weeping knob
-    weepT = (500 + Math.random() * 1400 - pupilDilate * 300) / Math.max(0.05, cfg.weep)
+    weepT = (500 + random() * 1400 - pupilDilate * 300)
     weepGlow = 1
-    acid.push({ x: ex + (Math.random() - 0.5) * 12, y: ey + 6, vy: 0.02 + Math.random() * 0.03, hue: 70 + Math.random() * 70 })
+    acid.push({ x: ex + (random() - 0.5) * 12, y: ey + 6, vy: 0.02 + random() * 0.03, hue: 70 + random() * 70 })
   }
   const [, , , wb] = wBounds()
   for (let i = acid.length - 1; i >= 0; i--) {
     const a = acid[i]
     a.vy += dt * 0.00012
     a.y += a.vy * dt
-    if (a.y >= wb - 4 || Math.random() < 0.005) {
-      stains.push({ x: a.x, y: a.y, r: 6, mr: 24 + Math.random() * 44, hue: a.hue, age: 0 })
+    if (a.y >= wb - 4 || random() < 0.005) {
+      stains.push({ x: a.x, y: a.y, r: 6, mr: 24 + random() * 44, hue: a.hue, age: 0 })
       if (stains.length > 90) stains.shift()
       acid.splice(i, 1)
     }
@@ -479,7 +466,7 @@ function stepAcid(dt, now) {
     if (s.r < s.mr) s.r += dt * 0.02
     for (const u of herd) {
       if (u.gone) continue
-      if (Math.hypot(u.x - s.x, u.y - s.y) < s.r) {
+      if (hypot(u.x - s.x, u.y - s.y) < s.r) {
         u.hue = (u.hue + (((s.hue - u.hue + 540) % 360) - 180) * 0.02 + 360) % 360
       }
     }
@@ -489,13 +476,13 @@ function drawStains() {
   ctx.save()
   ctx.globalCompositeOperation = 'overlay' // bleed color into whatever's beneath
   for (const s of stains) {
-    const a = Math.max(0, 0.62 - s.age * 0.000016)
+    const a = max(0, 0.62 - s.age * 0.000016)
     if (a <= 0.01) continue
     const gg = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, s.r)
     gg.addColorStop(0, `hsla(${s.hue | 0},90%,50%,${a})`)
     gg.addColorStop(1, `hsla(${s.hue | 0},90%,50%,0)`)
     ctx.fillStyle = gg
-    ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.fill()
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, P2); ctx.fill()
   }
   ctx.restore()
 }
@@ -505,7 +492,7 @@ function drawAcid() {
   for (const a of acid) {
     ctx.fillStyle = `hsla(${a.hue | 0},90%,55%,0.85)`
     ctx.shadowBlur = 8; ctx.shadowColor = `hsla(${a.hue | 0},90%,50%,0.8)`
-    ctx.beginPath(); ctx.ellipse(a.x, a.y, 2.2, 3.6, 0, 0, Math.PI * 2); ctx.fill()
+    ctx.beginPath(); ctx.ellipse(a.x, a.y, 2.2, 3.6, 0, 0, P2); ctx.fill()
   }
   ctx.restore()
 }
@@ -514,7 +501,7 @@ function drawAcid() {
 // You paint it into being by dragging (presence tracks sky.charge). It arcs over the
 // herd, but the bands are bruised and out of order, it sags and writhes, flickers like
 // bad neon, rots into gaps — and it drips corrupted color that stains the world.
-function rbPresence() { return Math.min(1, sky.charge * 1.7) * cfg.rbow }
+function rbPresence() { return min(1, sky.charge * 1.7) }
 // geometry helper: the arc's center + base radius for the current world
 function rbGeom() {
   const [l, r, tp, bt] = wBounds()
@@ -527,20 +514,20 @@ function stepRainbow(dt) {
   const pres = rbPresence()
   rbDripT -= dt
   if (rbDripT <= 0 && pres > 0.3) {
-    rbDripT = 350 + Math.random() * 1100
+    rbDripT = 350 + random() * 1100
     const [cx0, cy0, R] = rbGeom()
-    const a = Math.PI * (1.2 + Math.random() * 0.6)
-    const rr = R - (Math.random() * RB_BANDS) * 6.5
-    rbDrips.push({ x: cx0 + Math.cos(a) * rr, y: cy0 + Math.sin(a) * rr + 6, vy: 0.02, hue: Math.random() * 300 })
+    const a = PI * (1.2 + random() * 0.6)
+    const rr = R - (random() * RB_BANDS) * 6.5
+    rbDrips.push({ x: cx0 + cos(a) * rr, y: cy0 + sin(a) * rr + 6, vy: 0.02, hue: random() * 300 })
   }
   const [, , , wb] = wBounds()
   for (let i = rbDrips.length - 1; i >= 0; i--) {
     const d = rbDrips[i]
     d.vy += dt * 0.00012
     d.y += d.vy * dt
-    if (d.y >= wb - 4 || Math.random() < 0.004) {
+    if (d.y >= wb - 4 || random() < 0.004) {
       // bleed into the same stain system the acid uses — the rainbow rots the world too
-      stains.push({ x: d.x, y: d.y, r: 6, mr: 20 + Math.random() * 30, hue: d.hue, age: 0 })
+      stains.push({ x: d.x, y: d.y, r: 6, mr: 20 + random() * 30, hue: d.hue, age: 0 })
       if (stains.length > 90) stains.shift()
       rbDrips.splice(i, 1)
     }
@@ -550,7 +537,7 @@ function drawRainbow(now) {
   const pres = rbPresence()
   if (pres <= 0.02) return
   const [cx0, cy0, R, H] = rbGeom()
-  const a0 = Math.PI * 1.18, a1 = Math.PI * 1.82, N = 64
+  const a0 = PI * 1.18, a1 = PI * 1.82, N = 64
   ctx.save()
   ctx.globalCompositeOperation = 'lighter'
   for (let bnd = 0; bnd < RB_BANDS; bnd++) {
@@ -558,7 +545,7 @@ function drawRainbow(now) {
     const baseHue = ((bnd / RB_BANDS) * 360 + s.hueShift + now * 0.006) % 360 // drifting, wrong order
     const thick = 5 + pres * 3.5
     const rr0 = R - bnd * (thick + 1.4)
-    const flick = 0.68 + 0.32 * Math.sin(now * 0.021 + s.ph * 5) // bad-neon flicker
+    const flick = 0.68 + 0.32 * sin(now * 0.021 + s.ph * 5) // bad-neon flicker
     ctx.lineWidth = thick
     ctx.strokeStyle = `hsla(${baseHue | 0},${s.rot ? 18 : 74}%,${s.rot ? 28 : 60}%,${pres * 0.6 * flick})`
     ctx.shadowBlur = 8
@@ -567,13 +554,13 @@ function drawRainbow(now) {
     let up = true
     for (let i = 0; i <= N; i++) {
       const t = i / N, a = a0 + (a1 - a0) * t
-      const mid = Math.sin(t * Math.PI)                  // 0..1..0 across the arc
+      const mid = sin(t * PI)                  // 0..1..0 across the arc
       const sag = mid * H * 0.11 * pres                  // droops in the middle
-      const wob = Math.sin(a * 3 + now * 0.0016 + s.ph) * (4 + pres * 9)
-        + Math.sin(a * 7 - now * 0.0009 + s.ph) * (2 + pres * 4)
+      const wob = sin(a * 3 + now * 0.0016 + s.ph) * (4 + pres * 9)
+        + sin(a * 7 - now * 0.0009 + s.ph) * (2 + pres * 4)
       const rr = rr0 + wob
-      const x = cx0 + Math.cos(a) * rr, y = cy0 + Math.sin(a) * rr + sag
-      const gap = s.rot && Math.sin(a * 9 + s.ph * 3) > 0.35 // necrotic bands break up
+      const x = cx0 + cos(a) * rr, y = cy0 + sin(a) * rr + sag
+      const gap = s.rot && sin(a * 9 + s.ph * 3) > 0.35 // necrotic bands break up
       if (gap) { up = true; continue }
       if (up) { ctx.moveTo(x, y); up = false } else ctx.lineTo(x, y)
     }
@@ -586,7 +573,7 @@ function drawRbDrips() {
   for (const d of rbDrips) {
     ctx.fillStyle = `hsla(${d.hue | 0},85%,60%,0.85)`
     ctx.shadowBlur = 6; ctx.shadowColor = `hsla(${d.hue | 0},85%,55%,0.7)`
-    ctx.beginPath(); ctx.ellipse(d.x, d.y, 2, 3.4, 0, 0, Math.PI * 2); ctx.fill()
+    ctx.beginPath(); ctx.ellipse(d.x, d.y, 2, 3.4, 0, 0, P2); ctx.fill()
   }
   ctx.restore()
 }
@@ -599,11 +586,11 @@ const particles = []
 function spawnDeliveryBurst(x, y) {
   const n = 16
   for (let i = 0; i < n; i++) {
-    const a = (i / n) * Math.PI * 2
+    const a = (i / n) * P2
     particles.push({
       x, y,
-      vx: Math.cos(a) * (1.2 + Math.random() * 0.8),
-      vy: Math.sin(a) * (1.2 + Math.random() * 0.8),
+      vx: cos(a) * (1.2 + random() * 0.8),
+      vy: sin(a) * (1.2 + random() * 0.8),
       hue: (i / n) * 360, // a full spectrum burst — a literal rainbow pop
       life: 1,
     })
@@ -615,12 +602,12 @@ function spawnDeliveryBurst(x, y) {
 function spawnVoidPop(x, y) {
   const n = 10
   for (let i = 0; i < n; i++) {
-    const a = (i / n) * Math.PI * 2
+    const a = (i / n) * P2
     particles.push({
       x, y,
-      vx: Math.cos(a) * (0.5 + Math.random() * 0.5),
-      vy: Math.sin(a) * (0.5 + Math.random() * 0.5),
-      hue: 4 + Math.random() * 10,
+      vx: cos(a) * (0.5 + random() * 0.5),
+      vy: sin(a) * (0.5 + random() * 0.5),
+      hue: 4 + random() * 10,
       life: 1,
     })
   }
@@ -636,15 +623,15 @@ function stepHerd(dt, now) {
     const [ex, ey] = skyElderPos(now)
     let best = null, bd = 1e9
     for (const u of herd) {
-      if (u.delivered || u.gone || u.sucked || shielded(u)) continue // can't lock what's shielded
-      const d = Math.hypot(ex - u.x, ey - u.y)
+      if (u.gone || u.sucked || shielded(u)) continue // can't lock what's shielded
+      const d = hypot(ex - u.x, ey - u.y)
       if (d < bd) { bd = d; best = u }
     }
     if (best && bd < 130) eyeTarget = best
   }
 
   for (const u of herd) {
-    if (u.delivered || u.gone) continue
+    if (u.gone) continue
 
     // once caught, a unicorn is committed — pulled straight into the pupil,
     // shrinking, until it's gone. This is the one thing the Elder actually
@@ -660,7 +647,7 @@ function stepHerd(dt, now) {
         spawnVoidPop(ex, ey)
         addSplat(u.x, u.y, u.hue)   // remains smear onto the nearest edge of the glass
         irisFlush = { hue: u.hue, t: 1 } // it digests the color: the iris flushes its hue
-        bloodshot = Math.min(1, bloodshot + 0.06) // and the eye reddens a little more
+        bloodshot = min(1, bloodshot + 0.06) // and the eye reddens a little more
         caps.push(genCap())         // a fresh vein bursts across the white
         if (caps.length > 30) caps.shift()
         u.gone = true               // topUpHerd() walks a stranger in to replace it
@@ -673,8 +660,8 @@ function stepHerd(dt, now) {
     // "warm" pulls, "grey" (low charge) lets them drift on their own.
     if (light.active && sky.charge > 0.05) {
       const dx = light.x - u.x, dy = light.y - u.y
-      const d = Math.hypot(dx, dy) || 1
-      const pull = Math.min(0.6, sky.charge) * 0.08
+      const d = hypot(dx, dy) || 1
+      const pull = min(0.6, sky.charge) * 0.08
       u.vx += (dx / d) * pull
       u.vy += (dy / d) * pull
     }
@@ -682,7 +669,7 @@ function stepHerd(dt, now) {
     // even with the light off. The cross calms them; the horns agitate and hurry.
     const [L, ld] = nearestLure(u.x, u.y)
     if (L && ld > 1) {
-      const lp = (L.type ? 0.02 : 0.013) * cfg.lure
+      const lp = L.type ? 0.02 : 0.013
       u.vx += ((L.x - u.x) / ld) * lp
       u.vy += ((L.y - u.y) / ld) * lp
       if (ld < 80) { const k = L.type ? 1.012 : 0.985; u.vx *= k; u.vy *= k }
@@ -690,7 +677,7 @@ function stepHerd(dt, now) {
     // gentle flocking: pull toward herd centroid, avoid crowding
     let cx = 0, cy = 0, n = 0
     for (const o of herd) {
-      if (o === u || o.delivered || o.sucked || o.gone) continue
+      if (o === u || o.sucked || o.gone) continue
       cx += o.x; cy += o.y; n++
       const dx = u.x - o.x, dy = u.y - o.y
       const d2 = dx * dx + dy * dy
@@ -715,7 +702,7 @@ function stepHerd(dt, now) {
     // light, or the round has already resolved
     if (phase === 'play' && !shielded(u) && skyElderOpen(now) > 0.3) {
       const [ex, ey] = skyElderPos(now)
-      if (Math.hypot(ex - u.x, ey - u.y) < cfg.hunger + elderPulse * 10) {
+      if (hypot(ex - u.x, ey - u.y) < 15 + elderPulse * 10) {
         u.sucked = true
         u.suckT = 0
         continue
@@ -744,7 +731,7 @@ function stepHerd(dt, now) {
 // small word-banks. Thousands of unique half-sense lines out of a few hundred bytes,
 // and it never quite adds up — which is the point. (Packs far better than 20 fixed
 // sentences, too.) Banks keyed by a letter; {X} slots in the templates pull from them.
-const pick = (a) => a[Math.random() * a.length | 0]
+const pick = (a) => a[random() * a.length | 0]
 const BANK = {
   N: ['color', 'name', 'face', 'light', 'rainbow', 'shadow', 'mouth'],
   P: ['teeth', 'tongue', 'throat', 'hands', 'eye'],
@@ -797,10 +784,10 @@ function kick(t) {
   o.start(t); o.stop(t + 0.2)
 }
 function noiseHit(t, dur, freq, gain) {
-  const n = Math.max(1, actx.sampleRate * dur | 0)
+  const n = max(1, actx.sampleRate * dur | 0)
   const buf = actx.createBuffer(1, n, actx.sampleRate)
   const d = buf.getChannelData(0)
-  for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1
+  for (let i = 0; i < n; i++) d[i] = random() * 2 - 1
   const src = actx.createBufferSource()
   src.buffer = buf
   const filt = actx.createBiquadFilter()
@@ -837,23 +824,20 @@ function snareHit(t) {
 // "gravel" comes from three things: pick the deepest voice available, run it slow
 // and low, and lay a synthesized growl + vinyl crackle underneath (those we CAN
 // build in Web Audio). Voices load async, so re-pick whenever the list changes.
-let theVoice = null, voiceList = [], voicePinned = false, voiceSelectRefresh = null
+let theVoice = null
 function loadVoices() {
   try {
-    voiceList = speechSynthesis.getVoices() || []
-    if (!voiceList.length) return
-    if (!voicePinned) {
-      // prefer US English (the vibe we're going for: a deep, warm, older male voice),
-      // then any English. We can't read timbre from the API, so bias by known deep /
-      // warm male voice names across platforms, then anything flagged male.
-      const us = voiceList.filter((v) => /^en[-_]?us/i.test(v.lang))
-      const en = voiceList.filter((v) => /^en/i.test(v.lang))
-      const pool = us.length ? us : (en.length ? en : voiceList)
-      const pref = ['ralph', 'reed', 'david', 'mark', 'fred', 'lee', 'rocko', 'guy',
-        'christopher', 'aaron', 'arthur', 'daniel', 'bruce', 'junior', 'grandpa', 'eddy', 'male']
-      theVoice = pool.find((v) => pref.some((p) => v.name.toLowerCase().includes(p))) || pool[0]
-    }
-    if (voiceSelectRefresh) voiceSelectRefresh() // keep the dropdown in sync
+    // prefer US English (the vibe we're going for: a deep, warm, older male voice),
+    // then any English. We can't read timbre from the API, so bias by known deep /
+    // warm male voice names across platforms, then anything flagged male.
+    const vs = speechSynthesis.getVoices() || []
+    if (!vs.length) return
+    const us = vs.filter((v) => /^en[-_]?us/i.test(v.lang))
+    const en = vs.filter((v) => /^en/i.test(v.lang))
+    const pool = us.length ? us : (en.length ? en : vs)
+    const pref = ['ralph', 'reed', 'david', 'mark', 'fred', 'lee', 'rocko', 'guy',
+      'christopher', 'aaron', 'arthur', 'daniel', 'bruce', 'junior', 'grandpa', 'eddy', 'male']
+    theVoice = pool.find((v) => pref.some((p) => v.name.toLowerCase().includes(p))) || pool[0]
   } catch (e) { /* ignore */ }
 }
 if (window.speechSynthesis) { loadVoices(); speechSynthesis.onvoiceschanged = loadVoices }
@@ -863,8 +847,8 @@ function speak(line) {
     if (!window.speechSynthesis) return
     const u = new SpeechSynthesisUtterance(line)
     if (theVoice) u.voice = theVoice
-    u.rate = cfg.vrate   // slow, dragging drawl
-    u.pitch = cfg.vpitch // deep and gravelly
+    u.rate = 0.5   // slow, dragging drawl
+    u.pitch = 0.18 // deep and gravelly
     u.volume = 1
     speechSynthesis.speak(u)
   } catch (e) { /* speech synthesis unavailable — captions still show */ }
@@ -872,15 +856,15 @@ function speak(line) {
 
 // A short gravelly rasp fired under each spoken line — two detuned low waves
 // through a lowpass, quick swell and decay. It doesn't track syllables; it just
-// adds grit on the downbeat where the voice lands. Scaled by cfg.grit.
+// adds grit on the downbeat where the voice lands. Scaled by the baked-in grit (0.6).
 function growl(t) {
-  if (!actx || cfg.grit <= 0) return
+  if (!actx) return
   const o1 = actx.createOscillator(), o2 = actx.createOscillator()
   const f = actx.createBiquadFilter(), g = actx.createGain()
   o1.type = 'sawtooth'; o2.type = 'square'
   o1.frequency.value = 64; o2.frequency.value = 64 * 1.5
   f.type = 'lowpass'; f.frequency.value = 520
-  const peak = 0.16 * cfg.grit
+  const peak = 0.096
   g.gain.setValueAtTime(0.0001, t)
   g.gain.exponentialRampToValueAtTime(peak, t + 0.06)
   g.gain.exponentialRampToValueAtTime(0.001, t + 0.55)
@@ -904,15 +888,15 @@ function droneStart() {
   o1.connect(f); o2.connect(f); f.connect(g)
   o1.start(); o2.start(); lfo.start()
   // vinyl crackle: a looped buffer of sparse pops through a highpass — the dusty
-  // old-tape hiss that says "90s". Volume rides cfg.grit.
+  // old-tape hiss that says "90s". Volume rides the grit amount.
   const len = actx.sampleRate * 2 | 0
   const buf = actx.createBuffer(1, len, actx.sampleRate)
   const d = buf.getChannelData(0)
-  for (let i = 0; i < len; i++) d[i] = Math.random() < 0.0009 ? (Math.random() * 2 - 1) : 0
+  for (let i = 0; i < len; i++) d[i] = random() < 0.0009 ? (random() * 2 - 1) : 0
   const cr = actx.createBufferSource(); cr.buffer = buf; cr.loop = true
   const crf = actx.createBiquadFilter(); crf.type = 'highpass'; crf.frequency.value = 1600
   const crg = actx.createGain(); crg.gain.value = 0.0001
-  crg.gain.setTargetAtTime(0.28 * cfg.grit, actx.currentTime, 1)
+  crg.gain.setTargetAtTime(0.168, actx.currentTime, 1)
   cr.connect(crf); crf.connect(crg); crg.connect(actx.destination); cr.start()
   droneNodes = { g, o1, o2, lfo, cr }
 }
@@ -1032,29 +1016,29 @@ function startVerse() {
 // the almond outline, computed not stored: an ellipse whose aspect (how tall the eye
 // is) is seeded, so the eye's shape varies a little per room. Eye-local coords.
 const EYE_ASPECT = 0.46 + rng() * 0.1
-const EYE_POINTS = gen(12, (_, i) => { const t = i / 12 * 6.2832; return [Math.cos(t), Math.sin(t) * EYE_ASPECT] })
+const EYE_POINTS = gen(12, (_, i) => { const t = i / 12 * 6.2832; return [cos(t), sin(t) * EYE_ASPECT] })
 // where the eye's pupil actually is right now, and how open it is — shared
 // with stepHerd so "wander too close" checks the same point that's drawn
 function skyElderPos(now) {
   const [l, r, tp, bt] = wBounds()
   const spanW = r - l, spanH = bt - tp
   return [
-    (l + r) / 2 + Math.sin(now * 0.00006) * spanW * 0.18,
-    tp + spanH * 0.2 + Math.cos(now * 0.00004) * spanH * 0.05,
+    (l + r) / 2 + sin(now * 0.00006) * spanW * 0.18,
+    tp + spanH * 0.2 + cos(now * 0.00004) * spanH * 0.05,
   ]
 }
 function skyElderOpen(now) {
   // a slow wobble on top of the base cycle so the blink isn't a perfect
   // metronome — reads as an organic, slightly wrong tic instead of a timer
-  const p = (now * 0.00011 + Math.sin(now * 0.00017) * 0.04) % 1
+  const p = (now * 0.00011 + sin(now * 0.00017) * 0.04) % 1
   const blink = p > 0.95 ? 1 - (p - 0.95) / 0.05 : 0
   // erratic twitches — rare when calm, frequent and sharp the more bloodshot it gets
-  const tw = Math.sin(now * 0.013) * Math.sin(now * 0.0071 + 1.3)
+  const tw = sin(now * 0.013) * sin(now * 0.0071 + 1.3)
   const thr = 1 - bloodshot * 0.6
-  const twitch = tw > thr ? Math.min(0.8, (tw - thr) * 4) : 0
+  const twitch = tw > thr ? min(0.8, (tw - thr) * 4) : 0
   // a rare hard squeeze-shut
   const squeeze = ((now * 0.00007) % 1) > 0.986 ? 1 : 0
-  return Math.max(0.05, 1 - blink - twitch - squeeze)
+  return max(0.05, 1 - blink - twitch - squeeze)
 }
 
 // trace the almond outline at a given vertical scale (1 = socket / lids fully open,
@@ -1070,16 +1054,16 @@ function eyeOutline(cx, cy, w, vs) {
 let eyeSwell = 1 // >1 in the "taken" ending as the eye swells toward full-screen
 
 function drawSkyElder(now) {
-  const w = Math.min(innerWidth, innerHeight) * 0.72 * eyeSwell
+  const w = min(innerWidth, innerHeight) * 0.72 * eyeSwell
   const [cx, cy] = skyElderPos(now)
   const pulse = elderPulse
   const openness = skyElderOpen(now) * (1 - eyeClose) // dawn forces the lids shut
   const bs = bloodshot
-  const throb = 0.6 + 0.4 * Math.sin(heartPhase * Math.PI * 2)
-  const hh = w * 0.5, P2 = Math.PI * 2
+  const throb = 0.6 + 0.4 * sin(heartPhase * P2)
+  const hh = w * 0.5
   // gaze turn + pupil dilation
-  const gx = Math.max(-1, Math.min(1, (gaze.x - cx) / (w * 0.9))) * w * 0.32
-  const gy = Math.max(-1, Math.min(1, (gaze.y - cy) / (innerHeight * 0.5))) * w * 0.13
+  const gx = max(-1, min(1, (gaze.x - cx) / (w * 0.9))) * w * 0.32
+  const gy = max(-1, min(1, (gaze.y - cy) / (innerHeight * 0.5))) * w * 0.13
   const dil = pupilDilate, ex = cx + gx, ey = cy + gy
 
   ctx.save()
@@ -1119,10 +1103,10 @@ function drawSkyElder(now) {
     ctx.stroke()
   }
   // necrotic bruising near the lower-inner corner / tear tracks
-  const shown = Math.ceil(bruises.length * (0.3 + bs * 0.6))
+  const shown = ceil(bruises.length * (0.3 + bs * 0.6))
   for (let i = 0; i < shown; i++) {
     const b = bruises[i]
-    const al = (0.1 + bs * 0.3 + weepGlow * 0.2) * (0.6 + 0.4 * Math.sin(now * 0.001 + b.ph))
+    const al = (0.1 + bs * 0.3 + weepGlow * 0.2) * (0.6 + 0.4 * sin(now * 0.001 + b.ph))
     const bx = cx + b.x * w, by = cy + b.y * w * 0.35 * openness + hh * 0.12, br = b.r * w * 0.9
     const bg = ctx.createRadialGradient(bx, by, 0, bx, by, br)
     bg.addColorStop(0, `hsla(${b.hue},50%,34%,${al})`)
@@ -1144,7 +1128,7 @@ function drawSkyElder(now) {
   ctx.beginPath(); ctx.arc(0, 0, iR, 0, P2); ctx.fill()
   ctx.strokeStyle = `hsla(${iHue | 0},80%,58%,${0.3 + irisFlush.t * 0.4})`
   ctx.lineWidth = 1
-  for (let i = 0; i < 22; i++) { const a = i / 22 * P2, r1 = iR * (0.78 + 0.16 * Math.sin(i * 3.7)); ctx.beginPath(); ctx.moveTo(Math.cos(a) * iR * 0.3, Math.sin(a) * iR * 0.3); ctx.lineTo(Math.cos(a) * r1, Math.sin(a) * r1); ctx.stroke() }
+  for (let i = 0; i < 22; i++) { const a = i / 22 * P2, r1 = iR * (0.78 + 0.16 * sin(i * 3.7)); ctx.beginPath(); ctx.moveTo(cos(a) * iR * 0.3, sin(a) * iR * 0.3); ctx.lineTo(cos(a) * r1, sin(a) * r1); ctx.stroke() }
   ctx.strokeStyle = `hsla(${iHue | 0},60%,7%,0.85)`; ctx.lineWidth = iR * 0.07
   ctx.beginPath(); ctx.arc(0, 0, iR * 0.96, 0, P2); ctx.stroke()
 
@@ -1155,9 +1139,9 @@ function drawSkyElder(now) {
   ctx.fillStyle = '#050205'
   ctx.beginPath(); ctx.arc(0, 0, pR, 0, P2); ctx.fill()
   ctx.fillStyle = 'hsla(0,0%,100%,0.9)'
-  ctx.beginPath(); ctx.arc(-iR * 0.16, -iR * 0.16, Math.max(1.4, iR * 0.09), 0, P2); ctx.fill()
+  ctx.beginPath(); ctx.arc(-iR * 0.16, -iR * 0.16, max(1.4, iR * 0.09), 0, P2); ctx.fill()
   ctx.fillStyle = 'hsla(0,0%,100%,0.45)'
-  ctx.beginPath(); ctx.arc(iR * 0.1, iR * 0.14, Math.max(0.8, iR * 0.05), 0, P2); ctx.fill()
+  ctx.beginPath(); ctx.arc(iR * 0.1, iR * 0.14, max(0.8, iR * 0.05), 0, P2); ctx.fill()
   ctx.restore() // iris translate/scale
 
   // veins reach for prey
@@ -1217,13 +1201,13 @@ function drawSkyElder(now) {
 function drawElderCaption(now) {
   const [ex, ey] = skyElderPos(now)
   ctx.save()
-  ctx.globalAlpha = Math.min(1, captionTimer * 2.4)
+  ctx.globalAlpha = min(1, captionTimer * 2.4)
   ctx.fillStyle = '#f4f0ff'
   ctx.font = 'italic 15px Georgia, "Times New Roman", serif'
   ctx.textAlign = 'center'
   ctx.shadowBlur = 6
   ctx.shadowColor = 'rgba(0,0,0,0.8)'
-  ctx.fillText(currentLine, ex, ey + Math.min(innerWidth, innerHeight) * 0.42)
+  ctx.fillText(currentLine, ex, ey + min(innerWidth, innerHeight) * 0.42)
   ctx.restore()
 }
 
@@ -1235,27 +1219,27 @@ function drawLightOrb(now) {
   ctx.save()
   ctx.globalCompositeOperation = 'lighter'
   // the shield bubble: anything inside is safe from the eye and the piles
-  const sr = SHIELD + Math.sin(now * 0.006) * 2
+  const sr = SHIELD + sin(now * 0.006) * 2
   const sgrad = ctx.createRadialGradient(light.x, light.y, sr * 0.6, light.x, light.y, sr)
   sgrad.addColorStop(0, 'hsla(190,90%,75%,0)')
   sgrad.addColorStop(1, 'hsla(190,90%,80%,0.14)')
   ctx.fillStyle = sgrad
-  ctx.beginPath(); ctx.arc(light.x, light.y, sr, 0, Math.PI * 2); ctx.fill()
+  ctx.beginPath(); ctx.arc(light.x, light.y, sr, 0, P2); ctx.fill()
   ctx.strokeStyle = 'hsla(190,90%,82%,0.35)'; ctx.lineWidth = 1
-  ctx.beginPath(); ctx.arc(light.x, light.y, sr, 0, Math.PI * 2); ctx.stroke()
+  ctx.beginPath(); ctx.arc(light.x, light.y, sr, 0, P2); ctx.stroke()
   ctx.shadowBlur = 44
   ctx.shadowColor = `hsl(${sky.hue},95%,60%)`
   const grad = ctx.createConicGradient(now * 0.0009, light.x, light.y)
   for (let i = 0; i <= 6; i++) grad.addColorStop(i / 6, `hsl(${i * 60},95%,62%)`)
   ctx.fillStyle = grad
   ctx.beginPath()
-  ctx.arc(light.x, light.y, r, 0, Math.PI * 2)
+  ctx.arc(light.x, light.y, r, 0, P2)
   ctx.fill()
   // a bright white-hot core so it still reads as a light source, not just a disc
   ctx.globalAlpha = 0.7
   ctx.fillStyle = '#fff'
   ctx.beginPath()
-  ctx.arc(light.x, light.y, r * 0.28, 0, Math.PI * 2)
+  ctx.arc(light.x, light.y, r * 0.28, 0, P2)
   ctx.fill()
   ctx.restore()
 }
@@ -1267,11 +1251,11 @@ function drawTendrils(now) {
   ctx.save()
   ctx.globalCompositeOperation = 'lighter'
   for (const u of herd) {
-    if (u.delivered || u.sucked || u.gone) continue
+    if (u.sucked || u.gone) continue
     const dx = light.x - u.x, dy = light.y - u.y
-    const dist = Math.hypot(dx, dy) || 1
+    const dist = hypot(dx, dy) || 1
     const nx = -dy / dist, ny = dx / dist
-    const wiggle = Math.sin(now * 0.004 + u.x * 0.05) * Math.min(24, dist * 0.12)
+    const wiggle = sin(now * 0.004 + u.x * 0.05) * min(24, dist * 0.12)
     const cx = (light.x + u.x) / 2 + nx * wiggle
     const cy = (light.y + u.y) / 2 + ny * wiggle
 
@@ -1293,7 +1277,7 @@ function drawTendrils(now) {
       const ix = (1 - p) * (1 - p) * u.x + 2 * (1 - p) * p * cx + p * p * light.x
       const iy = (1 - p) * (1 - p) * u.y + 2 * (1 - p) * p * cy + p * p * light.y
       ctx.fillStyle = `hsla(${(u.hue + p * 150) % 360},95%,72%,${0.85 * (1 - p * 0.4)})`
-      ctx.beginPath(); ctx.arc(ix, iy, 2.4, 0, Math.PI * 2); ctx.fill()
+      ctx.beginPath(); ctx.arc(ix, iy, 2.4, 0, P2); ctx.fill()
     }
   }
   ctx.restore()
@@ -1308,7 +1292,7 @@ function drawTrail() {
     ctx.globalAlpha = p.life * 0.6
     ctx.fillStyle = `hsl(${p.hue},95%,65%)`
     ctx.beginPath()
-    ctx.arc(p.x, p.y, 3 + p.life * 6, 0, Math.PI * 2)
+    ctx.arc(p.x, p.y, 3 + p.life * 6, 0, P2)
     ctx.fill()
   }
   ctx.restore()
@@ -1319,10 +1303,10 @@ function drawParticles() {
   ctx.save()
   ctx.globalCompositeOperation = 'lighter'
   for (const p of particles) {
-    ctx.globalAlpha = Math.max(0, p.life)
+    ctx.globalAlpha = max(0, p.life)
     ctx.fillStyle = `hsl(${p.hue},95%,65%)`
     ctx.beginPath()
-    ctx.arc(p.x, p.y, 3, 0, Math.PI * 2)
+    ctx.arc(p.x, p.y, 3, 0, P2)
     ctx.fill()
   }
   ctx.restore()
@@ -1333,19 +1317,17 @@ function drawParticles() {
 // tail, and — the part that matters most at a glance — a real head with a
 // muzzle, an ear, an eye, and a twisted horn. All vector, no stored sprite.
 function drawUnicorn(u) {
-  const a = Math.atan2(u.vy, u.vx) || 0
-  const dim = u.delivered
-  const hue = dim ? 0 : u.hue
-  const sat = dim ? '0%' : '90%'
-  const ink = dim ? 'hsla(0,0%,90%,0.7)' : `hsla(${hue},${sat},78%,1)`
-  const fill = dim ? 'hsla(0,0%,90%,0.14)' : `hsla(${hue},${sat},68%,0.26)`
+  const a = atan2(u.vy, u.vx) || 0
+  const hue = u.hue, sat = '90%'
+  const ink = `hsla(${hue},${sat},78%,1)`
+  const fill = `hsla(${hue},${sat},68%,0.26)`
 
   // caught by the eye: shrinks to nothing as it's dragged in; u.scale is the
   // per-unicorn "some bigger, some smaller" size.
   const base = 1.7 * u.scale
-  const shrink = u.sucked ? Math.max(0.02, 1 - u.suckT) * base : base
+  const shrink = u.sucked ? max(0.02, 1 - u.suckT) * base : base
   const b = u.build, n = u.neck
-  const gait = Math.sin(performance.now() * 0.007 + u.gait) * (u.gallop ? 3.2 : 0.7)
+  const gait = sin(performance.now() * 0.007 + u.gait) * (u.gallop ? 3.2 : 0.7)
 
   ctx.save()
   ctx.translate(u.x, u.y)
@@ -1357,19 +1339,19 @@ function drawUnicorn(u) {
 
   // soft presence glow first
   const gg = ctx.createRadialGradient(0, -5, 0, 0, -5, 22)
-  gg.addColorStop(0, `hsla(${hue},${sat},65%,${dim ? 0.12 : 0.36})`)
+  gg.addColorStop(0, `hsla(${hue},${sat},65%,0.36)`)
   gg.addColorStop(1, 'hsla(0,0%,0%,0)')
   ctx.fillStyle = gg
-  ctx.beginPath(); ctx.arc(0, -5, 22, 0, Math.PI * 2); ctx.fill()
+  ctx.beginPath(); ctx.arc(0, -5, 22, 0, P2); ctx.fill()
 
   // shielded in the light: a protective ring — the eye and the piles can't touch it
-  if (shielded(u) && !dim) {
-    ctx.strokeStyle = `hsla(190,90%,82%,${0.4 + 0.3 * Math.sin(performance.now() * 0.01 + u.gait)})`
+  if (shielded(u)) {
+    ctx.strokeStyle = `hsla(190,90%,82%,${0.4 + 0.3 * sin(performance.now() * 0.01 + u.gait)})`
     ctx.lineWidth = 1.2
-    ctx.beginPath(); ctx.arc(0, -3, 14, 0, Math.PI * 2); ctx.stroke()
+    ctx.beginPath(); ctx.arc(0, -3, 14, 0, P2); ctx.stroke()
   }
 
-  ctx.shadowBlur = dim ? 4 : 9
+  ctx.shadowBlur = 9
   ctx.shadowColor = `hsl(${hue},${sat},65%)`
   ctx.strokeStyle = ink
   ctx.fillStyle = fill
@@ -1379,7 +1361,7 @@ function drawUnicorn(u) {
   const hx = hbx + 2, hy = hby
 
   // wings behind everything (a few unicorns are winged)
-  if (u.wings && !dim) {
+  if (u.wings) {
     ctx.lineWidth = 1.2
     ctx.fillStyle = `hsla(${(hue + 30) % 360},${sat},74%,0.16)`
     for (const s of [1, 0.72]) {
@@ -1455,11 +1437,11 @@ function drawUnicorn(u) {
   ctx.fill(); ctx.stroke()
 
   // eye
-  ctx.fillStyle = dim ? 'hsla(0,0%,95%,0.7)' : `hsla(${hue},40%,94%,0.95)`
-  ctx.beginPath(); ctx.arc(hx + 3, hy - 1.8, 0.9, 0, Math.PI * 2); ctx.fill()
+  ctx.fillStyle = `hsla(${hue},40%,94%,0.95)`
+  ctx.beginPath(); ctx.arc(hx + 3, hy - 1.8, 0.9, 0, P2); ctx.fill()
 
   // chin tuft (a few)
-  if (u.beard && !dim) {
+  if (u.beard) {
     ctx.strokeStyle = ink; ctx.lineWidth = 1
     ctx.beginPath(); ctx.moveTo(hx + 4.5, hy + 1.6); ctx.quadraticCurveTo(hx + 3.5, hy + 5, hx + 5.5, hy + 6); ctx.stroke()
   }
@@ -1478,15 +1460,13 @@ function drawUnicorn(u) {
   }
 
   // markings on the barrel (a second color, fixed at spawn)
-  if (!dim) {
-    ctx.fillStyle = `hsla(${u.spotHue},85%,72%,0.5)`
-    for (const [mx, my, mr] of u.marks) { ctx.beginPath(); ctx.arc(mx, my, mr, 0, Math.PI * 2); ctx.fill() }
-  }
+  ctx.fillStyle = `hsla(${u.spotHue},85%,72%,0.5)`
+  for (const [mx, my, mr] of u.marks) { ctx.beginPath(); ctx.arc(mx, my, mr, 0, P2); ctx.fill() }
 
   // horn — the brightest thing on it, and a different shape on each one
   ctx.save()
-  ctx.shadowBlur = dim ? 5 : 16
-  ctx.strokeStyle = dim ? 'hsla(0,0%,96%,0.65)' : `hsl(${(hue + 45) % 360},95%,85%)`
+  ctx.shadowBlur = 16
+  ctx.strokeStyle = `hsl(${(hue + 45) % 360},95%,85%)`
   ctx.lineWidth = 1.7
   const wx = hx + 2, wy = hy - 4, len = 8 + u.wild * 12
   ctx.beginPath()
@@ -1524,7 +1504,7 @@ function drawSky(now) {
   ctx.save()
   ctx.globalCompositeOperation = 'lighter'
   for (const b of bands) {
-    const yy = innerHeight * b.y + Math.sin(now * b.sp + b.ph) * innerHeight * 0.03
+    const yy = innerHeight * b.y + sin(now * b.sp + b.ph) * innerHeight * 0.03
     const h = innerHeight * b.amp * 2
     const g = ctx.createLinearGradient(0, yy - h, 0, yy + h)
     g.addColorStop(0, 'hsla(0,0%,0%,0)')
@@ -1534,11 +1514,11 @@ function drawSky(now) {
     ctx.fillRect(0, yy - h, innerWidth, h * 2)
   }
   for (const s of stars) {
-    const tw = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(now * 0.001 * s.sp + s.tw))
+    const tw = 0.35 + 0.65 * (0.5 + 0.5 * sin(now * 0.001 * s.sp + s.tw))
     ctx.globalAlpha = tw
     ctx.fillStyle = `hsla(${(sky.hue + 200) % 360},30%,${72 + tw * 22}%,1)`
     ctx.beginPath()
-    ctx.arc(s.x * innerWidth, s.y * innerHeight, s.r * tw, 0, Math.PI * 2)
+    ctx.arc(s.x * innerWidth, s.y * innerHeight, s.r * tw, 0, P2)
     ctx.fill()
   }
   ctx.restore()
@@ -1553,25 +1533,25 @@ function drawDarkEyes() {
   ctx.globalCompositeOperation = 'lighter'
   for (const e of darkEyes) {
     const p = e.t / 2600 // 0..1 lifetime
-    let open = Math.min(1, p / 0.15) * (1 - Math.max(0, (p - 0.85) / 0.15))
-    if (p > 0.55 && p < 0.68) open *= Math.abs((p - 0.615) / 0.065) // quick blink dip
-    open = Math.max(0, open)
+    let open = min(1, p / 0.15) * (1 - max(0, (p - 0.85) / 0.15))
+    if (p > 0.55 && p < 0.68) open *= abs((p - 0.615) / 0.065) // quick blink dip
+    open = max(0, open)
     const a = open * 0.55
     if (a <= 0.01) continue
     const w = e.s
     ctx.strokeStyle = `hsla(4,30%,82%,${a})`
     ctx.lineWidth = 1
     ctx.beginPath()
-    ctx.ellipse(e.x, e.y, w, w * 0.5 * open, 0, 0, Math.PI * 2)
+    ctx.ellipse(e.x, e.y, w, w * 0.5 * open, 0, 0, P2)
     ctx.stroke()
     // pupil turned toward where you're looking
-    const ox = Math.max(-1, Math.min(1, (gaze.x - e.x) / (w * 3))) * w * 0.4
-    const oy = Math.max(-1, Math.min(1, (gaze.y - e.y) / (w * 3))) * w * 0.2 * open
+    const ox = max(-1, min(1, (gaze.x - e.x) / (w * 3))) * w * 0.4
+    const oy = max(-1, min(1, (gaze.y - e.y) / (w * 3))) * w * 0.2 * open
     ctx.fillStyle = `hsla(4,72%,60%,${a * 1.4})`
     ctx.shadowBlur = 8
     ctx.shadowColor = 'hsla(4,80%,55%,0.6)'
     ctx.beginPath()
-    ctx.ellipse(e.x + ox, e.y + oy, w * 0.16, w * 0.42 * open, 0, 0, Math.PI * 2)
+    ctx.ellipse(e.x + ox, e.y + oy, w * 0.16, w * 0.42 * open, 0, 0, P2)
     ctx.fill()
     ctx.shadowBlur = 0
   }
@@ -1581,11 +1561,11 @@ function drawDarkEyes() {
 // A breathing vignette — the edges of the frame slowly close in and ease back,
 // like the dark is inhaling. Drawn under the HUD so the text stays readable.
 function drawVignette(now) {
-  const breath = 0.5 + 0.5 * Math.sin(now * 0.0004)
+  const breath = 0.5 + 0.5 * sin(now * 0.0004)
   const dread = bloodshot // the edge bleeds red as the doom clock climbs
   const g = ctx.createRadialGradient(
     innerWidth / 2, innerHeight * 0.46, innerHeight * 0.2,
-    innerWidth / 2, innerHeight * 0.5, Math.max(innerWidth, innerHeight) * 0.72
+    innerWidth / 2, innerHeight * 0.5, max(innerWidth, innerHeight) * 0.72
   )
   g.addColorStop(0, 'hsla(0,0%,0%,0)')
   g.addColorStop(1, `hsla(${260 - dread * 260},${35 + dread * 45}%,2%,${0.5 + breath * 0.18 + dread * 0.16})`)
@@ -1594,12 +1574,12 @@ function drawVignette(now) {
 }
 // the two endings: a warm dawn wash or a red-black swallow, with a caption; then regen
 function drawEnding() {
-  const k = Math.min(1, endT / 2200), dawn = phase === 'dawn'
+  const k = min(1, endT / 2200), dawn = phase === 'dawn'
   ctx.fillStyle = dawn ? `hsla(42,55%,86%,${k * 0.5})` : `hsla(0,85%,7%,${k * 0.62})`
   ctx.fillRect(0, 0, innerWidth, innerHeight)
   ctx.textAlign = 'center'
   ctx.fillStyle = dawn ? `rgba(60,40,20,${k})` : `rgba(255,215,215,${k})`
-  ctx.font = `italic ${Math.min(innerWidth, innerHeight) * 0.07}px Georgia, serif`
+  ctx.font = `italic ${min(innerWidth, innerHeight) * 0.07}px Georgia, serif`
   ctx.fillText(dawn ? 'the herd crossed' : 'the sky is taken', innerWidth / 2, innerHeight * 0.44)
   ctx.font = '15px monospace'
   ctx.fillStyle = dawn ? `rgba(60,40,20,${k * 0.85})` : `rgba(255,195,195,${k * 0.85})`
@@ -1610,7 +1590,7 @@ function drawEnding() {
 // a warm, inviting glow on the right edge — the valley, where you're taking the herd
 function drawValley(now) {
   const [wl, wr, wt, wb] = wBounds()
-  const band = (wr - wl) * 0.11, pulse = 0.5 + 0.5 * Math.sin(now * 0.002)
+  const band = (wr - wl) * 0.11, pulse = 0.5 + 0.5 * sin(now * 0.002)
   const g = ctx.createLinearGradient(wr - band, 0, wr, 0)
   g.addColorStop(0, 'hsla(84,80%,60%,0)')
   g.addColorStop(1, `hsla(84,80%,62%,${0.1 + pulse * 0.1})`)
@@ -1625,15 +1605,15 @@ function drawRiders() {
   const now = performance.now()
   ctx.save(); ctx.globalCompositeOperation = 'lighter'
   for (const r of riders.values()) {
-    const a = Math.max(0, 1 - (now - r.t) / 2500) * 0.55
+    const a = max(0, 1 - (now - r.t) / 2500) * 0.55
     if (a <= 0.02) continue
     const x = r.x * innerWidth, y = r.y * innerHeight
     ctx.shadowBlur = 16; ctx.shadowColor = `hsl(${r.hue | 0},90%,60%)`
     ctx.fillStyle = `hsla(${r.hue | 0},90%,72%,${a})`
-    ctx.beginPath(); ctx.arc(x, y, 6, 0, Math.PI * 2); ctx.fill()
+    ctx.beginPath(); ctx.arc(x, y, 6, 0, P2); ctx.fill()
     ctx.shadowBlur = 0
     ctx.strokeStyle = `hsla(${r.hue | 0},90%,82%,${a * 0.8})`; ctx.lineWidth = 1
-    ctx.beginPath(); ctx.arc(x, y, 12, 0, Math.PI * 2); ctx.stroke()
+    ctx.beginPath(); ctx.arc(x, y, 12, 0, P2); ctx.stroke()
   }
   ctx.restore()
 }
@@ -1644,13 +1624,13 @@ function drawIntro() {
   ctx.fillRect(0, 0, innerWidth, innerHeight)
   ctx.globalAlpha = introA
   ctx.textAlign = 'center'
-  const S = Math.min(innerWidth, innerHeight)
+  const S = min(innerWidth, innerHeight)
   ctx.fillStyle = '#f0e9ff'; ctx.font = `italic ${S * 0.09}px Georgia, serif`
   ctx.fillText('Aurora Loom', innerWidth / 2, innerHeight * 0.38)
   ctx.fillStyle = '#cfc8e8'; ctx.font = '15px monospace'
   ctx.fillText('drag the light  ·  keep the herd inside it  ·  walk them to the valley', innerWidth / 2, innerHeight * 0.49)
   ctx.fillText(`get ${GOAL} across before the eye takes the sky`, innerWidth / 2, innerHeight * 0.55)
-  const pulse = 0.5 + 0.5 * Math.sin(performance.now() * 0.004)
+  const pulse = 0.5 + 0.5 * sin(performance.now() * 0.004)
   ctx.fillStyle = `rgba(185,165,240,${0.4 + pulse * 0.6})`
   ctx.fillText('— drag to begin —', innerWidth / 2, innerHeight * 0.68)
   ctx.globalAlpha = 1; ctx.textAlign = 'left'
@@ -1665,7 +1645,7 @@ function render(now) {
   // ambient eye-glow wash — remote players' contributions show up here too
   const g = ctx.createRadialGradient(
     innerWidth / 2, innerHeight * 0.2, 0,
-    innerWidth / 2, innerHeight * 0.2, Math.max(innerWidth, innerHeight) * 0.8
+    innerWidth / 2, innerHeight * 0.2, max(innerWidth, innerHeight) * 0.8
   )
   g.addColorStop(0, `hsla(${sky.hue},90%,55%,${0.05 + sky.charge * 0.35})`)
   g.addColorStop(1, 'hsla(0,0%,0%,0)')
@@ -1719,9 +1699,9 @@ function newRound() {
   phase = 'play'; endT = 0; eyeClose = 0; eyeSwell = 1
   bloodshot = 0.06; deliveredCount = 0; lostCount = 0
   worldScale = 1; worldScaleTarget = 1; zoom = 1
-  sky.charge = 0.08; sky.hue = Math.random() * 360 | 0
+  sky.charge = 0.08; sky.hue = random() * 360 | 0
   herd.length = 0
-  for (let i = 0; i < cfg.floor + 1; i++) herd.push(spawnUnicorn(Math.random() * innerWidth, Math.random() * innerHeight))
+  for (let i = 0; i < 9; i++) herd.push(spawnUnicorn(random() * innerWidth, random() * innerHeight))
   blobs.length = 0; acid.length = 0; stains.length = 0; rbDrips.length = 0
   elder('a new sky. drag to bring color to it')
 }
@@ -1729,21 +1709,21 @@ function newRound() {
 // ---------- loop ----------
 let last = performance.now()
 function loop(t) {
-  const dt = Math.min(32, t - last)
+  const dt = min(32, t - last)
   last = t
-  elderPulse = Math.max(0, elderPulse - dt * 0.0012)
-  captionTimer = Math.max(0, captionTimer - dt * 0.00032)
+  elderPulse = max(0, elderPulse - dt * 0.0012)
+  captionTimer = max(0, captionTimer - dt * 0.00032)
 
   // charge rises while actively dragging, decays otherwise — this alone is a
   // complete, satisfying solo game per the "offline-first" rule.
   if (light.active) {
-    sky.charge = Math.min(1, sky.charge + dt * 0.0006)
+    sky.charge = min(1, sky.charge + dt * 0.0006)
     sky.hue = (sky.hue + dt * 0.02) % 360
     broadcastThrottled()
     trail.push({ x: light.x, y: light.y, hue: sky.hue, life: 1 })
     if (trail.length > 80) trail.shift()
   } else {
-    sky.charge = Math.max(0, sky.charge - dt * 0.00015)
+    sky.charge = max(0, sky.charge - dt * 0.00015)
   }
   for (let i = trail.length - 1; i >= 0; i--) {
     trail[i].life -= dt * 0.0018
@@ -1774,22 +1754,22 @@ function loop(t) {
   let tx, ty, ease
   if (eyeTarget) { tx = eyeTarget.x; ty = eyeTarget.y; ease = 0.16 }
   else if (light.active) { tx = light.x; ty = light.y; ease = 0.06 }
-  else { tx = (wl + wr) / 2 + Math.sin(t * 0.0003) * (wr - wl) * 0.3; ty = (wt + wb) / 2 + Math.cos(t * 0.00023) * (wb - wt) * 0.2; ease = 0.02 }
+  else { tx = (wl + wr) / 2 + sin(t * 0.0003) * (wr - wl) * 0.3; ty = (wt + wb) / 2 + cos(t * 0.00023) * (wb - wt) * 0.2; ease = 0.02 }
   gaze.x += (tx - gaze.x) * ease
   gaze.y += (ty - gaze.y) * ease
 
   // pupil blows open when you're near the eye or it has locked prey, clamps back otherwise
   const near = light.active
-    ? Math.max(0, 1 - Math.hypot(light.x - ex, light.y - ey) / (Math.min(innerWidth, innerHeight) * 0.45 * worldScale))
+    ? max(0, 1 - hypot(light.x - ex, light.y - ey) / (min(innerWidth, innerHeight) * 0.45 * worldScale))
     : 0
-  const want = Math.max(near, eyeTarget ? 0.9 : 0)
+  const want = max(near, eyeTarget ? 0.9 : 0)
   pupilDilate += (want - pupilDilate) * 0.08
 
   // the eye inflames the whole time it watches, and only ebbs a hair — it remembers.
   // This IS the doom clock: reach 1 and the sky is taken.
-  if (phase === 'play') bloodshot = Math.min(1, Math.max(0, bloodshot + dt * (0.000008 * cfg.rot - 0.0000005)))
+  if (phase === 'play') bloodshot = min(1, max(0, bloodshot + dt * (0.000008 - 0.0000005)))
 
-  if (started) introA = Math.max(0, introA - dt * 0.0016) // title fades once you grab the light
+  if (started) introA = max(0, introA - dt * 0.0016) // title fades once you grab the light
   // forget riders we haven't heard from in a couple of seconds
   const tnow = performance.now()
   for (const [id, r] of riders) if (tnow - r.t > 2500) riders.delete(id)
@@ -1800,22 +1780,22 @@ function loop(t) {
     else if (bloodshot >= 1) { phase = 'taken'; endT = 0; saveBest() }
   } else {
     endT += dt
-    if (phase === 'dawn') { eyeClose = Math.min(1, eyeClose + dt * 0.0005); bloodshot = Math.max(0, bloodshot - dt * 0.0006) }
-    else { eyeSwell = Math.min(3.2, eyeSwell + dt * 0.0009); eyeClose = Math.max(0, eyeClose - dt * 0.001) } // taken: the eye swells to fill the sky
+    if (phase === 'dawn') { eyeClose = min(1, eyeClose + dt * 0.0005); bloodshot = max(0, bloodshot - dt * 0.0006) }
+    else { eyeSwell = min(3.2, eyeSwell + dt * 0.0009); eyeClose = max(0, eyeClose - dt * 0.001) } // taken: the eye swells to fill the sky
     if (endT > 6000) newRound()
   }
   // a visual heartbeat sharing the audio heartbeat's quickening tempo (throbs the veins)
-  heartPhase = (heartPhase + dt * 0.001 / Math.max(0.4, 1.6 - pupilDilate * 1.1)) % 1
-  irisFlush.t = Math.max(0, irisFlush.t - dt * 0.0016)
+  heartPhase = (heartPhase + dt * 0.001 / max(0.4, 1.6 - pupilDilate * 1.1)) % 1
+  irisFlush.t = max(0, irisFlush.t - dt * 0.0016)
   // nictitating membrane: sweep across now and then, more often the more inflamed
-  if (memb > 0) { memb += dt * 0.0026; if (memb >= 1) { memb = 0; membT = 4000 + Math.random() * 9000 } }
+  if (memb > 0) { memb += dt * 0.0026; if (memb >= 1) { memb = 0; membT = 4000 + random() * 9000 } }
   else { membT -= dt * (1 + bloodshot); if (membT <= 0) memb = 0.0001 }
 
   // dark eyes: spawn one on a random timer, age the rest out
   nextEyeT -= dt
   if (nextEyeT <= 0) {
-    nextEyeT = 4000 + Math.random() * 9000
-    darkEyes.push({ x: Math.random() * innerWidth, y: innerHeight * (0.3 + Math.random() * 0.6), s: 7 + Math.random() * 11, t: 0 })
+    nextEyeT = 4000 + random() * 9000
+    darkEyes.push({ x: random() * innerWidth, y: innerHeight * (0.3 + random() * 0.6), s: 7 + random() * 11, t: 0 })
   }
   for (let i = darkEyes.length - 1; i >= 0; i--) {
     darkEyes[i].t += dt
@@ -1843,13 +1823,13 @@ function broadcastThrottled() {
 const net = connectRelay(ROOM, {
   onId: () => elder('Connected to today\'s sky.'),
   onPeerJoin: (id) => { peerCount++; elder(`A rider joined (${id.slice(0, 6)}). ${peerCount} here now.`) },
-  onPeerLeave: (id) => { peerCount = Math.max(0, peerCount - 1); riders.delete(id); elder(`A rider left (${id.slice(0, 6)}). ${peerCount} here now.`) },
+  onPeerLeave: (id) => { peerCount = max(0, peerCount - 1); riders.delete(id); elder(`A rider left (${id.slice(0, 6)}). ${peerCount} here now.`) },
   onMessage: (data) => {
     if (data?.t !== 'sky') return
     // fold a remote nudge into the shared local sky — additive, decayed, never
     // overwritten wholesale, so many concurrent players blend instead of fighting
     // over one authoritative value (there's no server authority to fight over anyway).
-    sky.charge = Math.min(1, sky.charge * 0.7 + data.charge * 0.3)
+    sky.charge = min(1, sky.charge * 0.7 + data.charge * 0.3)
     sky.hue = (sky.hue + (((data.hue - sky.hue + 540) % 360) - 180) * 0.15 + 360) % 360
     // remember the other rider's cursor + count so we can draw them (see drawRiders)
     if (data.id != null && data.id !== net.id) riders.set(data.id, { x: data.x, y: data.y, hue: data.hue, d: data.d || 0, t: performance.now() })
