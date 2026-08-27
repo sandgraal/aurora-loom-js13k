@@ -13,18 +13,30 @@ sky grows back, a little different. If other people happen to be playing right n
 your sky and theirs are the same sky.
 
 Almost none of it is hand-authored: the stars, the palette, the eye's veins, the beat,
-and the Elder's lyrics are all generated from the room's seed, so no two skies are the
-same and everyone in a room shares theirs.
+and the Elder's lyrics are all drawn from the room's seed, so no two skies are the
+same and everyone in a room starts from the same one. (Lyric *order* still diverges
+per player — events trigger them — but the word-banks roll the same seeded dice.)
 
 ## How to play
-- **Drag** (mouse or touch) to move the light and paint the sky brighter.
-- Unicorns drift toward the light. **Whatever's inside the light is safe** — the eye
-  can't take it, and neither can the crusty piles growing along the edges.
-- Steer the herd to the **right edge (the valley)**; each one that crosses counts.
-  You need enough "charge" (built by dragging) for them to cross.
-- The **eye reddens over time, and more every time it eats one** — that's the clock.
-  Get **13** across before it maxes out.
-- It never really ends: each round the sky regrows a little different.
+- **Weave.** Charge is woven, not held: it rises with how far you *move* the light,
+  and drains while you hold still. The shield spends it (a little more per unicorn
+  protected), and each delivery burns a piece of it. Park to protect, weave to bank.
+- Unicorns drift toward the lit light. **Whatever's inside the light is safe** — the
+  eye can't take it, and neither can the crusty piles growing along the edges — but
+  only while you have charge left to pay for it.
+- Steer the herd to the **right edge (the valley)**; each crossing counts, costs
+  charge, and **calms the eye a little**. You need charge above half for the valley
+  to accept them.
+- The **eye reddens over time, faster the closer you get to 13, and hard every time
+  something dies** — that's the clock. Deliveries push it back. Get **13** across
+  before it maxes out.
+- Watch the pupil: it **locks on** to the nearest unshielded unicorn, dilates for a
+  beat, then strikes. The dilation is your warning — cover the target with the light
+  and the lock breaks.
+- What crosses over leaves remains at the goal line. Around the 8th crossing,
+  **the valley remembers what you fed it.**
+- Your best is the **fastest dawn** in seconds. It never really ends: each round the
+  sky regrows a little different.
 
 Run it locally (needs a static server, not `file://`, because the dev version is ES
 modules):
@@ -66,14 +78,21 @@ that import is free.
 npm run build
 ```
 
-Bundles `src/main.js` (+ `src/net.js`), minifies it, runs it through **Roadroller**
-(a packer that beats plain zip), and inlines the result into a single
-**self-contained** `dist/index.html` — no external fonts, CDNs, or services, per the
-rules. It builds both the plain-minified and the Roadroller-packed variants, zips each
-with `zip -9`, keeps whichever is smaller, and **fails if the zip exceeds 13,312 bytes**
-(falls back to the minified build if Roadroller can't be fetched). Current output:
-`dist/aurora-loom.zip` ≈ **11.6 KB** (~1.7 KB to spare). `dist/` and `*.zip` are
-gitignored — submit the zip plus this public source repo.
+Bundles `src/main.js` (+ `src/net.js`) with esbuild, squeezes it again with
+**terser**, runs it through **Roadroller** (a packer that beats plain zip), inlines
+the result into a single **self-contained** `dist/index.html` — no external fonts,
+CDNs, or services, per the rules — zips with `zip -9`, re-deflates the archive with
+**advzip**, and **fails if the zip exceeds 13,312 bytes**. It builds both the
+plain-minified and the Roadroller-packed variants and keeps whichever zip is smaller,
+so the pack can never make things worse (and the build still works offline, falling
+back gracefully when terser/Roadroller/advzip can't be fetched). For the submission
+build, run `RR=2 npm run build` — the full Roadroller `-O2` parameter search (takes
+minutes, saves real bytes). Current output: `dist/aurora-loom.zip` ≈ **11.6 KB**
+(~1.7 KB to spare). `dist/` and `*.zip` are gitignored — submit the zip plus this
+public source repo.
+
+Every trick in the pipeline — and what each one actually bought in bytes — is
+written up in [TECHNIQUES.md](TECHNIQUES.md).
 
 Deadline: **13 Sep 2026, 13:00 CEST**. Category: **Online** (on top of Desktop/Mobile).
 

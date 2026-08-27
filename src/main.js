@@ -155,7 +155,8 @@ function elder(msg) {
 const light = { x: innerWidth / 2, y: innerHeight / 2, px: 0, py: 0, active: false }
 function pointerPos(e) {
   const t = e.touches ? e.touches[0] : e
-  return toWorld(t.clientX, t.clientY)
+  // on touch, seat the light a little above the finger so it is not hidden under it
+  return toWorld(t.clientX, t.clientY - (e.touches || e.pointerType === "touch" ? 40 : 0))
 }
 function onDown(e) { started = true; light.active = true; Object.assign(light, pointerPos(e)); light.px = light.x; light.py = light.y; startVerse() }
 function onMove(e) { if (light.active) Object.assign(light, pointerPos(e)) }
@@ -289,9 +290,13 @@ function topUpHerd() {
 // dark inward-curving twin-horn (call it a devil) that agitates. Deliberately
 // abstract — bars and curves of light, not icons. Seeded so a room shares them.
 const lures = [
-  { type: 0, x: innerWidth * (0.18 + rng() * 0.16), y: innerHeight * (0.32 + rng() * 0.32), ph: rng() * 6.28 },
-  { type: 1, x: innerWidth * (0.64 + rng() * 0.16), y: innerHeight * (0.32 + rng() * 0.32), ph: rng() * 6.28 },
+  { type: 0, fx: 0.18 + rng() * 0.16, fy: 0.32 + rng() * 0.32, ph: rng() * 6.28 },
+  { type: 1, fx: 0.64 + rng() * 0.16, fy: 0.32 + rng() * 0.32, ph: rng() * 6.28 },
 ]
+// positions live as viewport fractions (like the stars) so a resize re-seats them
+const seatLures = () => { for (const L of lures) { L.x = L.fx * innerWidth; L.y = L.fy * innerHeight } }
+seatLures()
+addEventListener("resize", seatLures)
 function nearestLure(x, y) {
   let best = null, bd = 1e9
   for (const L of lures) { const d = hypot(L.x - x, L.y - y); if (d < bd) { bd = d; best = L } }
