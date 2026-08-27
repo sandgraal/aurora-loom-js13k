@@ -131,8 +131,8 @@ let elderPulse = 0
 // never touches the shared sky, so the Online-layer "watch but never touch" framing
 // still holds.
 const gaze = { x: innerWidth / 2, y: innerHeight * 0.2 }
-let pupilDilate = 0
-let eyeTarget = null, lockT = 0
+let pupilDilate = 0, dread = 0 // dread: eased "how close is the nearest prey to the pupil"
+let eyeTarget = null, lockT = 0, lastTauntAt = -1e9, doomSaid = false
 let pupil = [innerWidth / 2, innerHeight * 0.2] // where the drawn pupil actually is
 // how inflamed the eye is (0..1): eases up the whole time it watches, jumps on every
 // kill, and only ebbs very slowly — the eye remembers. Drives sclera redness, vein
@@ -145,8 +145,8 @@ let heartPhase = 0
 // a nictitating membrane that occasionally sweeps sideways across the eye
 let memb = 0, membT = 3000 + rng() * 6000
 function elder(msg) {
-  elderLog.unshift(`${new Date().toLocaleTimeString()}  ${msg}`)
-  elderLog.length = 6
+  elderLog.unshift(msg)
+  if (elderLog.length > 6) elderLog.length = 6
   logEl.textContent = elderLog.join('\n')
   elderPulse = 1
 }
@@ -234,7 +234,9 @@ function kill(u, x, y, why) {
   addSplat(u.x, u.y, u.hue)
   bloodshot = min(1, bloodshot + 0.06)
   u.gone = true
-  elder(`${logLine(why)} (${lostCount} taken)`)
+  const l = logLine(why)
+  elder(`${l} (${lostCount} taken)`)
+  say(l) // the eye narrates what it takes
 }
 let phase = 'play' // 'play' | 'dawn' | 'taken'
 let endT = 0, eyeClose = 0
@@ -642,9 +644,14 @@ function stepHerd(dt, now) {
       if (d < bd) { bd = d; best = u }
     }
     if (best && bd < 190) newTarget = best
+    dread += (max(0, 1 - bd / 300) - dread) * 0.04
   }
   lockT = newTarget && newTarget === eyeTarget ? lockT + dt : 0
   eyeTarget = newTarget
+  // a held lock earns a taunt from the verse generator (throttled)
+  if (lockT > 300 && now - lastTauntAt > 12000) { lastTauntAt = now; say(makeLine()) }
+  // the last quarter of the clock gets called out, once per round
+  if (bloodshot > 0.75 && !doomSaid) { doomSaid = true; say(logLine('doom')) }
   shieldedN = 0
 
   for (const u of herd) {
@@ -743,7 +750,8 @@ function stepHerd(dt, now) {
 // small word-banks. Thousands of unique half-sense lines out of a few hundred bytes,
 // and it never quite adds up — which is the point. (Packs far better than 20 fixed
 // sentences, too.) Banks keyed by a letter; {X} slots in the templates pull from them.
-const pick = (a) => a[random() * a.length | 0]
+const vrng = mulberry32(strSeed(ROOM + 'v')) // the verse's own seeded stream
+const pick = (a) => a[vrng() * a.length | 0]
 const BANK = {
   N: ['color', 'name', 'face', 'light', 'rainbow', 'shadow', 'mouth'],
   P: ['teeth', 'tongue', 'throat', 'hands', 'eye'],
@@ -773,11 +781,13 @@ const LOG = {
   wake: ["a {N} in the corner started movin'", 'somethin\' woke up hungry'],
   take: ['gone — the eye keeps the {N}', 'one less; it drinks the {N}'],
   eat: ['the pile pulled one under', 'the corner ate a {A} one'],
+  doom: ['the sky is goin\' {A}... hurry', 'almost mine now, little {N}'],
   cross: ['one slipped to the valley', "gone across, don't wave back"],
   hush: ['a quiet {C}, drag to color it', 'the {C} is watching, paint it'],
 }
 const logLine = (k) => fill(pick(LOG[k]))
-let verseSet = []      // the lines generated for the current verse
+let sayQ = []          // lines waiting for the voice (events push, the bar boundary drains)
+const say = (l) => { if (sayQ.length < 2) sayQ.push(l) } // never a backlog of stale lines
 let currentLine = ''
 let captionTimer = 0
 let actx = null
@@ -945,10 +955,11 @@ function heartbeat() {
   if (!actx) return
   const now = actx.currentTime
   if (hbNext < now + 0.1) {
-    const vol = 0.16 + pupilDilate * 0.5
+    const danger = max(pupilDilate, dread)
+    const vol = 0.16 + danger * 0.5
     thump(now + 0.02, vol)
     thump(now + 0.16, vol * 0.6)
-    hbNext = now + (1.6 - pupilDilate * 1.1)
+    hbNext = now + (1.6 - danger * 1.1)
   }
   requestAnimationFrame(heartbeat)
 }
@@ -967,9 +978,12 @@ const sdeg = () => MINSCALE[rng() * MINSCALE.length | 0]
 const KICKS = [1, 0, 0, rng() < 0.35 ? 1 : 0, rng() < 0.2 ? 1 : 0, 0, rng() < 0.75 ? 1 : 0, 0]
 const BASS_HZ = [note(0, 0), 0, 0, rng() < 0.6 ? note(sdeg(), 1) : 0, 0, 0, note(sdeg(), 0), 0]
 const LEAD_HZ = gen(3 + (rng() * 2 | 0), () => note(sdeg(), 2)) // high, unresolved motif
-let verseOn = false, nextStep = 0, stepIdx = 0, verseLines = 0, barCount = 0, lastVerseAt = -Infinity
-function scheduleVerse() {
-  if (!verseOn) return
+let beatOn = false, nextStep = 0, stepIdx = 0, barCount = 0, lastVerseAt = -Infinity
+function scheduleBeat() {
+  if (!beatOn) return
+  // dawn earns silence: the beat and drone stop, the chimes own the ending.
+  // (the 'taken' ending keeps grinding — the sky is HIS now.)
+  if (phase === 'dawn') { beatOn = false; droneStop(); return }
   while (nextStep < actx.currentTime + 0.15) {
     const idx = stepIdx % 8
     if (KICKS[idx]) kick(nextStep)
@@ -981,44 +995,38 @@ function scheduleVerse() {
       blip(nextStep, f, 0.55, 'triangle', 0.11, 3200)
       blip(nextStep, f * 1.005, 0.55, 'triangle', 0.08, 3200) // detuned twin
     }
-    // start a bar's line only once the voice has finished the last one, so a slow
-    // gravelly delivery never piles up or gets clipped — bars between ride the beat.
-    if (idx === 0 && verseLines < verseSet.length &&
+    // drop the next queued line on a bar boundary, only once the voice has
+    // finished the last one, so the slow gravelly delivery never piles up.
+    if (idx === 0 && sayQ.length &&
         (!window.speechSynthesis || !speechSynthesis.speaking)) {
-      currentLine = verseSet[verseLines]
-      verseLines++
+      currentLine = sayQ.shift()
       captionTimer = 1
-      elder(currentLine)
       speak(currentLine)
       growl(nextStep)
     }
     nextStep += VERSE_STEP
     stepIdx++
     if (idx === 7) barCount++
-    // end once every chosen line has been spoken and the voice has fallen silent
-    if (verseLines >= verseSet.length &&
-        (!window.speechSynthesis || !speechSynthesis.speaking)) { verseOn = false; droneStop(); return }
-    if (stepIdx > verseSet.length * 24) { verseOn = false; droneStop(); return } // safety
   }
-  requestAnimationFrame(scheduleVerse)
+  requestAnimationFrame(scheduleBeat)
 }
-// dragging is already a user gesture, so it's the natural place to (re)start
-// audio — browsers require one before AudioContext/speech will actually play
-function startVerse() {
-  const t = performance.now()
-  if (verseOn || t - lastVerseAt < 8000) return
-  lastVerseAt = t
+// (re)start the audio bed. Dragging is already a user gesture, so it's the
+// natural place — browsers require one before AudioContext/speech will play.
+function beatStart() {
   ensureAudio()
-  if (!actx) return
+  if (!actx || beatOn) return
   droneStart()
   if (!hbStarted) { hbStarted = true; hbNext = actx.currentTime; heartbeat() }
-  verseSet = Array.from({ length: 6 }, makeLine) // six freshly generated lines
-  verseOn = true
-  stepIdx = 0
-  verseLines = 0
-  barCount = 0
+  beatOn = true
   nextStep = actx.currentTime + 0.05
-  scheduleVerse()
+  scheduleBeat()
+}
+function startVerse() {
+  beatStart()
+  const t = performance.now()
+  if (t - lastVerseAt < 45000) return // a full verse is a round-start event, not a spam
+  lastVerseAt = t
+  for (let i = 0; i < 3; i++) say(makeLine())
 }
 
 // The Sky Elder, drawn: a faint eye-shaped constellation drifting slowly and
@@ -1714,6 +1722,7 @@ function newRound() {
   bloodshot = 0.06; deliveredCount = 0; lostCount = 0
   worldScale = 1; worldScaleTarget = 1; zoom = 1
   sky.charge = 0.08; sky.hue = random() * 360 | 0
+  doomSaid = false; lastVerseAt = -Infinity; sayQ.length = 0
   herd.length = 0
   for (let i = 0; i < 9; i++) herd.push(spawnUnicorn(random() * innerWidth, random() * innerHeight))
   blobs.length = 0; acid.length = 0; stains.length = 0; rbDrips.length = 0
@@ -1754,6 +1763,7 @@ function loop(t) {
     if (p.life <= 0) particles.splice(i, 1)
   }
 
+  if (actx && !beatOn && phase === 'play' && started) beatStart()
   stepHerd(dt, t)
   stepBlobs(dt)
   stepAcid(dt, t)
@@ -1802,7 +1812,7 @@ function loop(t) {
     if (endT > 6000) newRound()
   }
   // a visual heartbeat sharing the audio heartbeat's quickening tempo (throbs the veins)
-  heartPhase = (heartPhase + dt * 0.001 / max(0.4, 1.6 - pupilDilate * 1.1)) % 1
+  heartPhase = (heartPhase + dt * 0.001 / max(0.4, 1.6 - max(pupilDilate, dread) * 1.1)) % 1
   irisFlush.t = max(0, irisFlush.t - dt * 0.0016)
   // nictitating membrane: sweep across now and then, more often the more inflamed
   if (memb > 0) { memb += dt * 0.0026; if (memb >= 1) { memb = 0; membT = 4000 + random() * 9000 } }
