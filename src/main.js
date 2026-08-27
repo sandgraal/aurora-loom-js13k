@@ -240,7 +240,18 @@ function kill(u, x, y, why) {
 }
 let phase = 'play' // 'play' | 'dawn' | 'taken'
 let endT = 0, eyeClose = 0
-const shielded = (u) => light.active && sky.charge > 0.1 && hypot(light.x - u.x, light.y - u.y) < SHIELD
+const shielded = (u) => (light.active && sky.charge > 0.1 && hypot(light.x - u.x, light.y - u.y) < SHIELD) || riderShield(u)
+// another rider parked over a unicorn protects it too (their cursor is broadcast
+// screen-normalized; invert our camera transform to compare in world coords)
+function riderShield(u) {
+  if (!riders.size) return false
+  const now = performance.now()
+  for (const r of riders.values()) {
+    if (now - r.t > 1500) continue
+    if (hypot(CX + (r.x * innerWidth - CX) / zoom - u.x, CY + (r.y * innerHeight - CY) / zoom - u.y) < SHIELD) return true
+  }
+  return false
+}
 // title/how-to intro (fades on the first drag), a saved personal best, and the other
 // riders currently in this sky (their cursors, for the Online layer)
 let started = false, introA = 1, best = 0, roundT = 0
@@ -1869,10 +1880,14 @@ const net = connectRelay(ROOM, {
     // fold a remote nudge into the shared local sky — additive, decayed, never
     // overwritten wholesale, so many concurrent players blend instead of fighting
     // over one authoritative value (there's no server authority to fight over anyway).
-    sky.charge = min(1, sky.charge * 0.7 + data.charge * 0.3)
+    if (data.charge > sky.charge) sky.charge = min(1, sky.charge * 0.7 + data.charge * 0.3)
     sky.hue = (sky.hue + (((data.hue - sky.hue + 540) % 360) - 180) * 0.15 + 360) % 360
     // remember the other rider's cursor + count so we can draw them (see drawRiders)
-    if (data.id != null && data.id !== net.id) riders.set(data.id, { x: data.x, y: data.y, hue: data.hue, d: data.d || 0, t: performance.now() })
+    if (data.id != null && data.id !== net.id) {
+      const prev = riders.get(data.id)
+      if (prev && (data.d || 0) > prev.d) { spawnDeliveryBurst(CX + (data.x * innerWidth - CX) / zoom, CY + (data.y * innerHeight - CY) / zoom); elder("a rider carried one across") }
+      riders.set(data.id, { x: data.x, y: data.y, hue: data.hue, d: data.d || 0, t: performance.now() })
+    }
   },
   onError: () => elder('Offline — playing solo. That\'s a fully valid way to play.'),
 })
