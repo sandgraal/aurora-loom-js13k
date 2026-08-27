@@ -87,8 +87,8 @@ plain-minified and the Roadroller-packed variants and keeps whichever zip is sma
 so the pack can never make things worse (and the build still works offline, falling
 back gracefully when terser/Roadroller/advzip can't be fetched). For the submission
 build, run `RR=2 npm run build` — the full Roadroller `-O2` parameter search (takes
-minutes, saves real bytes). Current output: `dist/aurora-loom.zip` ≈ **11.6 KB**
-(~1.7 KB to spare). `dist/` and `*.zip` are gitignored — submit the zip plus this
+minutes, saves real bytes). Current output: `dist/aurora-loom.zip` ≈ **12.0 KB**
+(~1.3 KB to spare). `dist/` and `*.zip` are gitignored — submit the zip plus this
 public source repo.
 
 Every trick in the pipeline — and what each one actually bought in bytes — is

@@ -17,6 +17,7 @@ that's what this file is for.
 | Phase 3: valley endgame, dawn ceremony, fastest-dawn best | 11,524 | +164 |
 | Phase 4: cooperative multiplayer fixes | 11,599 | +75 |
 | Phase 5: resize/touch polish (release `RR=2` build) | 11,637 | +38 |
+| Game-feel fix: steering rebalance + goal legibility | 11,955 | +318 |
 
 Read that table again: **the entire second half of the game's design cost less
 than the build pipeline saved.** Bank bytes before you spend them.
@@ -142,11 +143,31 @@ All of it is synthesized at runtime — the zip contains no audio data at all:
 4. **A timer isn't a system until the player can push it both ways.** The doom
    clock became a ledger: deliveries pay it down, deaths feed it, and it runs
    hotter as you approach the goal.
-5. **A verb without a cost isn't a decision.** Holding the light used to do
+5. **Steering must never be gated on a resource.** The first weave-economy cut
+   scaled the herd's pull with charge — so careful, slow herding (low charge)
+   was exactly when the light was weakest, and the always-on ambient forces
+   (lures, packing repulsion, an uncapped cohesion spring) out-pulled the
+   player. The playtest verdict was "impossible to steer." The fix: a pull
+   *floor* that beats every ambient force by construction, lures that yield
+   whenever the light is held, capped springs — charge now sweetens steering
+   but never gates it. Resources should price *protection and progress*, not
+   the basic verb.
+6. **Normalize per-frame forces to a timestep.** `v += a` each frame with
+   `v *= 0.96` damping means handling is 2× snappier at 120Hz and 2× sludgier
+   at 30fps — and a per-frame accrual cap doubles at 120Hz. One hoisted
+   `fs = dt/16.7` and `damp = 0.96 ** fs` makes the game feel identical on
+   every display (terminal velocity within 3% across 30–120fps) for ~40 bytes.
+7. **A gate no one can see is a bug, not a rule.** The "charge > 0.5 to
+   deliver" gate had zero pixels of representation; failing it was a silent
+   bounce. Now the same fact is shown three ways: a meter arc on the orb that
+   flips gold at the gate, a valley that visibly opens and shuts with it, and
+   a one-line coach hint that retires on your first delivery. Redundant
+   channels are how one-verb games teach without a tutorial.
+8. **A verb without a cost isn't a decision.** Holding the light used to do
    everything for free. Now charge is *woven* by movement and *spent* by
    shielding and delivering — park to protect, weave to bank. Same one-finger
    input, actual choices.
-6. **Promote your accidents.** Delivered unicorns already splattered remains
+9. **Promote your accidents.** Delivered unicorns already splattered remains
    near the goal by accident of code order. Making that intentional ("the
    valley remembers what you fed it" — the goal itself wakes as a threat
    around crossing 8) was the cheapest endgame we could have written.
