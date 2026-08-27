@@ -256,6 +256,7 @@ function riderShield(u) {
 // title/how-to intro (fades on the first drag), a saved personal best, and the other
 // riders currently in this sky (their cursors, for the Online layer)
 let started = false, introA = 1, best = 0, roundT = 0
+let taught = 0, lastShutBounce = -9e9 // first-delivery tutorial state (per page load)
 try { best = +localStorage.getItem('aurora-loom-best') || 0 } catch (e) { /* private window — no best */ }
 function saveBest() {
   const sec = roundT / 1000 | 0
@@ -650,6 +651,9 @@ function spawnVoidPop(x, y) {
 
 function stepHerd(dt, now) {
   const [wl, wr, wt, wb] = wBounds()
+  // one frame-scale for all per-frame steering forces + damping, so the herd
+  // handles identically on a 30fps phone and a 120Hz laptop
+  const fs = dt / 16.7, damp = 0.96 ** fs
   // The eye notices the nearest unicorn before it strikes — the pupil locks on
   // and dilates for a beat of dread. The lock must be HELD (lockT) before the
   // strike lands, so the dilation/vein telegraph is a real warning the player
@@ -694,38 +698,46 @@ function stepHerd(dt, now) {
       }
       continue
     }
-if (light.active && sky.charge > 0.1 && hypot(light.x - u.x, light.y - u.y) < SHIELD) shieldedN++ // counted for the shield's upkeep drain
+    const sh = light.active && sky.charge > 0.1 && hypot(light.x - u.x, light.y - u.y) < SHIELD
+    if (sh) shieldedN++ // counted for the shield's upkeep drain
 
-    // steer toward the light when it's active and the sky has some charge —
-    // "warm" pulls, "grey" (low charge) lets them drift on their own.
-    if (light.active && sky.charge > 0.05) {
+    // steer toward the light whenever it's held. The floor (0.03) out-pulls
+    // every ambient force by construction; charge sweetens it up to 0.072 but
+    // never gates it — steering must not depend on a resource.
+    if (light.active) {
       const dx = light.x - u.x, dy = light.y - u.y
       const d = hypot(dx, dy) || 1
-      const pull = min(0.6, sky.charge) * 0.08
+      const pull = (0.03 + min(0.6, sky.charge) * 0.07) * fs
       u.vx += (dx / d) * pull
       u.vy += (dy / d) * pull
     }
-    // a faint pull toward the nearest symbol — the herd wanders to it on its own,
-    // even with the light off. The cross calms them; the horns agitate and hurry.
-    const [L, ld] = nearestLure(u.x, u.y)
-    if (L && ld > 1) {
-      const lp = L.type ? 0.02 : 0.013
-      u.vx += ((L.x - u.x) / ld) * lp
-      u.vy += ((L.y - u.y) / ld) * lp
-      if (ld < 80) { const k = L.type ? 1.012 : 0.985; u.vx *= k; u.vy *= k }
+    // a faint pull toward the nearest symbol — but ONLY while the light is off:
+    // the herd wanders on its own, and yields the moment the player takes over.
+    // The cross calms them; the horns agitate and hurry.
+    if (!light.active) {
+      const [L, ld] = nearestLure(u.x, u.y)
+      if (L && ld > 1) {
+        const lp = (L.type ? 0.02 : 0.013) * fs
+        u.vx += ((L.x - u.x) / ld) * lp
+        u.vy += ((L.y - u.y) / ld) * lp
+        if (ld < 80) { const k = (L.type ? 1.012 : 0.985) ** fs; u.vx *= k; u.vy *= k }
+      }
     }
-    // gentle flocking: pull toward herd centroid, avoid crowding
+    // gentle flocking: pull toward herd centroid, avoid crowding. Crowding is
+    // softer inside the shield (they huddle), and the centroid spring is capped
+    // at 40px of authority so one unicorn CAN be led away from the herd.
     let cx = 0, cy = 0, n = 0
+    const ss = (sh ? 0.5 : 1) * fs
     for (const o of herd) {
       if (o === u || o.sucked || o.gone) continue
       cx += o.x; cy += o.y; n++
       const dx = u.x - o.x, dy = u.y - o.y
       const d2 = dx * dx + dy * dy
-      if (d2 > 0 && d2 < 900) { u.vx += dx / d2; u.vy += dy / d2 }
+      if (d2 > 0 && d2 < 900) { u.vx += dx / d2 * ss; u.vy += dy / d2 * ss }
     }
-    if (n) { u.vx += (cx / n - u.x) * 0.0008; u.vy += (cy / n - u.y) * 0.0008 }
+    if (n) { u.vx += max(-40, min(40, cx / n - u.x)) * 0.0008 * fs; u.vy += max(-40, min(40, cy / n - u.y)) * 0.0008 * fs }
 
-    u.vx *= 0.96; u.vy *= 0.96
+    u.vx *= damp; u.vy *= damp
     u.x += u.vx * dt; u.y += u.vy * dt
     // wilder unicorns resist blending into the ambient sky hue — they stay
     // brilliantly, stubbornly their own color
@@ -749,15 +761,20 @@ if (light.active && sky.charge > 0.1 && hypot(light.x - u.x, light.y - u.y) < SH
 
     // "the valley" — reaching the right edge with enough charge delivers the unicorn.
     // It leaves the board (topUpHerd walks another in), so the count never drops.
-    if (phase === 'play' && u.x > wr - 24 && sky.charge > 0.5) {
-      deliveredCount++
-      chime()
-      spawnDeliveryBurst(u.x, u.y)
-      bloodshot = max(0.02, bloodshot - 0.05) // each crossing calms the eye a little
-      sky.charge -= 0.04 // — and is paid for in woven light: camping the valley can't run on one bank
-      addSplat(u.x, u.y, u.hue) // what crosses over leaves something behind: the valley keeps count
-      u.gone = true
-      elder(`${logLine('cross')} — ${deliveredCount} so far`)
+    // Standing in the crossing strip while the gate is SHUT is a failed attempt:
+    // it re-arms the red lip flash + "valley is shut" hint until they leave.
+    if (phase === 'play' && u.x > wr - 24) {
+      if (sky.charge > 0.5) {
+        deliveredCount++
+        taught = 1
+        chime()
+        spawnDeliveryBurst(u.x, u.y)
+        bloodshot = max(0.02, bloodshot - 0.05) // each crossing calms the eye a little
+        sky.charge -= 0.04 // — and is paid for in woven light: camping the valley can't run on one bank
+        addSplat(u.x, u.y, u.hue) // what crosses over leaves something behind: the valley keeps count
+        u.gone = true
+        elder(`${logLine('cross')} — ${deliveredCount} so far`)
+      } else lastShutBounce = now
     }
   }
 }
@@ -1285,6 +1302,15 @@ function drawLightOrb(now) {
   ctx.beginPath()
   ctx.arc(light.x, light.y, r * 0.28, 0, P2)
   ctx.fill()
+  // the charge meter, worn as a ring: fills with charge, flips gold when the
+  // valley gate (0.5) opens. The one number that matters, where you're looking.
+  ctx.globalAlpha = 1
+  ctx.shadowBlur = 0
+  ctx.strokeStyle = sky.charge > 0.5 ? 'hsla(46,95%,60%,0.95)' : 'hsla(190,80%,75%,0.6)'
+  ctx.lineWidth = 3
+  ctx.beginPath(); ctx.arc(light.x, light.y, r + 7, -PI / 2, -PI / 2 + sky.charge * P2); ctx.stroke()
+  ctx.strokeStyle = 'rgba(255,255,255,0.8)'; ctx.lineWidth = 2 // the 0.5 gate tick (bottom)
+  ctx.beginPath(); ctx.moveTo(light.x, light.y + r + 3); ctx.lineTo(light.x, light.y + r + 11); ctx.stroke()
   ctx.restore()
 }
 
@@ -1634,13 +1660,20 @@ function drawEnding() {
 // a warm, inviting glow on the right edge — the valley, where you're taking the herd
 function drawValley(now) {
   const [wl, wr, wt, wb] = wBounds()
-  const band = (wr - wl) * 0.11, pulse = 0.5 + 0.5 * sin(now * 0.002)
+  // the valley's look IS the gate: open (charge > 0.5) glows wide and bright
+  // with a lit lip on the true 24px crossing zone; shut it shrinks to a sliver,
+  // and a failed crossing flashes the lip red for 400ms
+  const open = sky.charge > 0.5, pulse = 0.5 + 0.5 * sin(now * 0.002)
+  const band = (wr - wl) * (open ? 0.11 : 0.03)
   const g = ctx.createLinearGradient(wr - band, 0, wr, 0)
   g.addColorStop(0, 'hsla(84,80%,60%,0)')
-  g.addColorStop(1, `hsla(84,80%,62%,${0.1 + pulse * 0.1})`)
+  g.addColorStop(1, `hsla(84,80%,62%,${open ? 0.25 + pulse * 0.2 : 0.05})`)
   ctx.save(); ctx.globalCompositeOperation = 'lighter'
   ctx.fillStyle = g
   ctx.fillRect(wr - band, wt, band, wb - wt)
+  const fb = max(0, 1 - (now - lastShutBounce) / 400)
+  ctx.fillStyle = open ? `hsla(84,90%,70%,${0.3 + pulse * 0.15})` : `hsla(0,60%,50%,${0.04 + fb * 0.3})`
+  ctx.fillRect(wr - 24, wt, 24, wb - wt)
   ctx.restore()
 }
 // the other riders in this sky right now: a faint drifting cursor for each (mapped from
@@ -1664,7 +1697,7 @@ function drawRiders() {
 // the title + one-line how-to; fades on the first drag (which also starts the audio)
 function drawIntro() {
   ctx.save()
-  ctx.fillStyle = `rgba(6,4,12,${introA * 0.72})`
+  ctx.fillStyle = `rgba(6,4,12,${max(0, introA * 2 - 1) * 0.72})` // veil clears first, text lingers
   ctx.fillRect(0, 0, innerWidth, innerHeight)
   ctx.globalAlpha = introA
   ctx.textAlign = 'center'
@@ -1672,13 +1705,14 @@ function drawIntro() {
   ctx.fillStyle = '#f0e9ff'; ctx.font = `italic ${S * 0.09}px Georgia, serif`
   ctx.fillText('Aurora Loom', innerWidth / 2, innerHeight * 0.38)
   ctx.fillStyle = '#cfc8e8'; ctx.font = '15px monospace'
-  ctx.fillText('drag the light  ·  keep the herd inside it  ·  walk them to the valley', innerWidth / 2, innerHeight * 0.49)
-  ctx.fillText(`get ${GOAL} across before the eye takes the sky`, innerWidth / 2, innerHeight * 0.55)
+  ctx.fillText('hold and MOVE the light — weaving is what charges the sky', innerWidth / 2, innerHeight * 0.47)
+  ctx.fillText('your glow shields the herd — they follow where you lead', innerWidth / 2, innerHeight * 0.53)
+  ctx.fillText(`at half charge the valley opens — carry ${GOAL} across before the eye wins`, innerWidth / 2, innerHeight * 0.59)
   ctx.fillStyle = '#8f87ad'
-  ctx.fillText(`sky of ${ROOM.slice(-10)} — everyone here today shares it`, innerWidth / 2, innerHeight * 0.61)
+  ctx.fillText(`sky of ${ROOM.slice(-10)} — everyone here today shares it`, innerWidth / 2, innerHeight * 0.65)
   const pulse = 0.5 + 0.5 * sin(performance.now() * 0.004)
   ctx.fillStyle = `rgba(185,165,240,${0.4 + pulse * 0.6})`
-  ctx.fillText('— drag to begin —', innerWidth / 2, innerHeight * 0.68)
+  ctx.fillText('— drag to begin —', innerWidth / 2, innerHeight * 0.72)
   ctx.globalAlpha = 1; ctx.textAlign = 'left'
   ctx.restore()
 }
@@ -1733,6 +1767,15 @@ function render(now) {
     ctx.fillText(peerCount
       ? `${deliveredCount} / ${GOAL} crossed   ·   this sky: ${total}   ·   ${peerCount} riders${bestTxt}`
       : `${deliveredCount} / ${GOAL} crossed${bestTxt}`, 12, 22)
+    // first-run coach line: one sentence, center-bottom, retired forever by the
+    // first delivery. The gate is invisible without this.
+    if (!taught) {
+      ctx.textAlign = 'center'; ctx.fillStyle = 'rgba(240,235,255,0.75)'
+      ctx.fillText(now - lastShutBounce < 3000 ? 'the valley is shut — weave more light'
+        : sky.charge > 0.5 ? 'the valley is open — lead them right →'
+        : 'weave the light — the valley opens at half glow', innerWidth / 2, innerHeight - 14)
+      ctx.textAlign = 'left'
+    }
   } else {
     drawEnding()
   }
@@ -1766,7 +1809,7 @@ function loop(t) {
   // long it's held — and the shield spends it (an upkeep per protected unicorn).
   // Park to protect, weave to bank, arrive at the valley rich enough to deliver.
   if (light.active) {
-    sky.charge = min(1, sky.charge + min(20, hypot(light.x - light.px, light.y - light.py)) * 0.0005)
+    sky.charge = min(1, sky.charge + min(dt * 1.2, hypot(light.x - light.px, light.y - light.py)) * 0.0005)
     sky.charge = max(0, sky.charge - dt * (0.00008 + 0.00002 * shieldedN))
     sky.hue = (sky.hue + dt * 0.02) % 360
     broadcastThrottled()
@@ -1821,7 +1864,7 @@ function loop(t) {
   // This IS the doom clock: reach 1 and the sky is taken.
   if (phase === 'play') bloodshot = min(1, max(0, bloodshot + dt * 0.00001 * (1 + deliveredCount * 0.08)))
 
-  if (started) introA = max(0, introA - dt * 0.0016) // title fades once you grab the light
+  if (started) introA = max(0, introA - dt * 0.0004) // title lingers ~2.5s after the first grab
   // forget riders we haven't heard from in a couple of seconds
   const tnow = performance.now()
   for (const [id, r] of riders) if (tnow - r.t > 2500) riders.delete(id)
