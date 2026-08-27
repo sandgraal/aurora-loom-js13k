@@ -243,9 +243,12 @@ let endT = 0, eyeClose = 0
 const shielded = (u) => light.active && sky.charge > 0.1 && hypot(light.x - u.x, light.y - u.y) < SHIELD
 // title/how-to intro (fades on the first drag), a saved personal best, and the other
 // riders currently in this sky (their cursors, for the Online layer)
-let started = false, introA = 1, best = 0
-try { best = +localStorage.getItem('al_best') || 0 } catch (e) { /* private window — no best */ }
-function saveBest() { if (deliveredCount > best) { best = deliveredCount; try { localStorage.setItem('al_best', best) } catch (e) { /* ignore */ } } }
+let started = false, introA = 1, best = 0, roundT = 0
+try { best = +localStorage.getItem('aurora-loom-best') || 0 } catch (e) { /* private window — no best */ }
+function saveBest() {
+  const sec = roundT / 1000 | 0
+  if (!best || sec < best) { best = sec; try { localStorage.setItem('aurora-loom-best', best) } catch (e) { /* ignore */ } }
+}
 const riders = new Map() // id -> {x,y,hue,d,t}
 
 // how many unicorns are actually on the board
@@ -382,7 +385,9 @@ function addSplat(x, y, hue) {
   b.r = 12 + sqrt(b.count) * 7
   if (!b.sup && b.count >= 8) {
     b.sup = true
-    elder(logLine('wake'))
+    const l = blobPos(b)[0] > wBounds()[1] - 90 ? 'the valley remembers what you fed it' : logLine('wake')
+    elder(l)
+    say(l) // a pile waking is a beat worth speaking
   }
 }
 // a unicorn hitting the edge — leave a mark with a chance that scales with impact speed
@@ -734,6 +739,7 @@ function stepHerd(dt, now) {
       spawnDeliveryBurst(u.x, u.y)
       bloodshot = max(0.02, bloodshot - 0.05) // each crossing calms the eye a little
       sky.charge -= 0.04 // — and is paid for in woven light: camping the valley can't run on one bank
+      addSplat(u.x, u.y, u.hue) // what crosses over leaves something behind: the valley keeps count
       u.gone = true
       elder(`${logLine('cross')} — ${deliveredCount} so far`)
     }
@@ -1605,7 +1611,7 @@ function drawEnding() {
   ctx.fillText(dawn ? 'the herd crossed' : 'the sky is taken', innerWidth / 2, innerHeight * 0.44)
   ctx.font = '15px monospace'
   ctx.fillStyle = dawn ? `rgba(60,40,20,${k * 0.85})` : `rgba(255,195,195,${k * 0.85})`
-  ctx.fillText((dawn ? `${deliveredCount} carried to the valley` : `${lostCount} taken into the dark`) + (best ? `   ·   best ${best}` : ''), innerWidth / 2, innerHeight * 0.54)
+  ctx.fillText((dawn ? `${deliveredCount} carried to the valley in ${roundT / 1000 | 0}s` : `${lostCount} taken into the dark`) + (best ? `   ·   fastest dawn ${best}s` : ''), innerWidth / 2, innerHeight * 0.54)
   ctx.textAlign = 'left'
 }
 
@@ -1652,6 +1658,8 @@ function drawIntro() {
   ctx.fillStyle = '#cfc8e8'; ctx.font = '15px monospace'
   ctx.fillText('drag the light  ·  keep the herd inside it  ·  walk them to the valley', innerWidth / 2, innerHeight * 0.49)
   ctx.fillText(`get ${GOAL} across before the eye takes the sky`, innerWidth / 2, innerHeight * 0.55)
+  ctx.fillStyle = '#8f87ad'
+  ctx.fillText(`sky of ${ROOM.slice(-10)} — everyone here today shares it`, innerWidth / 2, innerHeight * 0.61)
   const pulse = 0.5 + 0.5 * sin(performance.now() * 0.004)
   ctx.fillStyle = `rgba(185,165,240,${0.4 + pulse * 0.6})`
   ctx.fillText('— drag to begin —', innerWidth / 2, innerHeight * 0.68)
@@ -1705,7 +1713,7 @@ function render(now) {
     ctx.textAlign = 'left'
     let total = deliveredCount
     for (const r of riders.values()) total += r.d
-    const bestTxt = best ? '   ·   best ' + best : ''
+    const bestTxt = best ? '   ·   fastest dawn ' + best + 's' : ''
     ctx.fillText(peerCount
       ? `${deliveredCount} / ${GOAL} crossed   ·   this sky: ${total}   ·   ${peerCount} riders${bestTxt}`
       : `${deliveredCount} / ${GOAL} crossed${bestTxt}`, 12, 22)
@@ -1722,7 +1730,7 @@ function newRound() {
   bloodshot = 0.06; deliveredCount = 0; lostCount = 0
   worldScale = 1; worldScaleTarget = 1; zoom = 1
   sky.charge = 0.08; sky.hue = random() * 360 | 0
-  doomSaid = false; lastVerseAt = -Infinity; sayQ.length = 0
+  doomSaid = false; lastVerseAt = -Infinity; sayQ.length = 0; roundT = 0
   herd.length = 0
   for (let i = 0; i < 9; i++) herd.push(spawnUnicorn(random() * innerWidth, random() * innerHeight))
   blobs.length = 0; acid.length = 0; stains.length = 0; rbDrips.length = 0
@@ -1803,8 +1811,13 @@ function loop(t) {
 
   // --- the arc: win at GOAL, lose when the eye maxes; play the ending, then regen ---
   if (phase === 'play') {
-    if (deliveredCount >= GOAL) { phase = 'dawn'; endT = 0; saveBest() }
-    else if (bloodshot >= 1) { phase = 'taken'; endT = 0; saveBest() }
+    roundT += dt
+    if (deliveredCount >= GOAL) {
+      phase = 'dawn'; endT = 0; saveBest()
+      const [, wr2, wt2, wb2] = wBounds()
+      for (let i = 0; i < 5; i++) setTimeout(() => { chime(); spawnDeliveryBurst(wr2 - 30, wt2 + (0.15 + 0.175 * i) * (wb2 - wt2)) }, i * 380)
+    }
+    else if (bloodshot >= 1) { phase = 'taken'; endT = 0 }
   } else {
     endT += dt
     if (phase === 'dawn') { eyeClose = min(1, eyeClose + dt * 0.0005); bloodshot = max(0, bloodshot - dt * 0.0006) }
