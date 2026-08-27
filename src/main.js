@@ -694,7 +694,7 @@ function stepHerd(dt, now) {
       }
       continue
     }
-    if (shielded(u)) shieldedN++ // counted for the shield's upkeep drain
+if (light.active && sky.charge > 0.1 && hypot(light.x - u.x, light.y - u.y) < SHIELD) shieldedN++ // counted for the shield's upkeep drain
 
     // steer toward the light when it's active and the sky has some charge —
     // "warm" pulls, "grey" (low charge) lets them drift on their own.
