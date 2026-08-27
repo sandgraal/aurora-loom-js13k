@@ -21,7 +21,7 @@ per player — events trigger them — but the word-banks roll the same seeded d
 - **Weave.** Charge is woven, not held: it rises with how far you *move* the light,
   and drains while you hold still. The shield spends it (a little more per unicorn
   protected), and each delivery burns a piece of it. Park to protect, weave to bank.
-- Unicorns drift toward the lit light. **Whatever's inside the light is safe** — the
+- Unicorns drift toward the light. **Whatever's inside the light is safe** — the
   eye can't take it, and neither can the crusty piles growing along the edges — but
   only while you have charge left to pay for it.
 - Steer the herd to the **right edge (the valley)**; each crossing counts, costs
