@@ -746,7 +746,7 @@ function stepHerd(dt, now) {
     // bounce off the (growing) world edges — and splash colored remains onto the
     // glass where it hits, harder impacts more likely to leave a mark
     if (u.x < wl) { u.x = wl; u.vx *= -1; splash(u, wl, u.y) }
-    if (u.x > wr) { u.x = wr; u.vx *= -1; splash(u, wr, u.y); if (phase === 'play' && sky.charge <= 0.5) lastShutBounce = now }
+    if (u.x > wr) { u.x = wr; u.vx *= -1; splash(u, wr, u.y) }
     if (u.y < wt) { u.y = wt; u.vy *= -1; splash(u, u.x, wt) }
     if (u.y > wb) { u.y = wb; u.vy *= -1; splash(u, u.x, wb) }
 
@@ -761,16 +761,20 @@ function stepHerd(dt, now) {
 
     // "the valley" — reaching the right edge with enough charge delivers the unicorn.
     // It leaves the board (topUpHerd walks another in), so the count never drops.
-    if (phase === 'play' && u.x > wr - 24 && sky.charge > 0.5) {
-      deliveredCount++
-      taught = 1
-      chime()
-      spawnDeliveryBurst(u.x, u.y)
-      bloodshot = max(0.02, bloodshot - 0.05) // each crossing calms the eye a little
-      sky.charge -= 0.04 // — and is paid for in woven light: camping the valley can't run on one bank
-      addSplat(u.x, u.y, u.hue) // what crosses over leaves something behind: the valley keeps count
-      u.gone = true
-      elder(`${logLine('cross')} — ${deliveredCount} so far`)
+    // Standing in the crossing strip while the gate is SHUT is a failed attempt:
+    // it re-arms the red lip flash + "valley is shut" hint until they leave.
+    if (phase === 'play' && u.x > wr - 24) {
+      if (sky.charge > 0.5) {
+        deliveredCount++
+        taught = 1
+        chime()
+        spawnDeliveryBurst(u.x, u.y)
+        bloodshot = max(0.02, bloodshot - 0.05) // each crossing calms the eye a little
+        sky.charge -= 0.04 // — and is paid for in woven light: camping the valley can't run on one bank
+        addSplat(u.x, u.y, u.hue) // what crosses over leaves something behind: the valley keeps count
+        u.gone = true
+        elder(`${logLine('cross')} — ${deliveredCount} so far`)
+      } else lastShutBounce = now
     }
   }
 }
