@@ -132,7 +132,8 @@ let elderPulse = 0
 // still holds.
 const gaze = { x: innerWidth / 2, y: innerHeight * 0.2 }
 let pupilDilate = 0
-let eyeTarget = null
+let eyeTarget = null, lockT = 0
+let pupil = [innerWidth / 2, innerHeight * 0.2] // where the drawn pupil actually is
 // how inflamed the eye is (0..1): eases up the whole time it watches, jumps on every
 // kill, and only ebbs very slowly — the eye remembers. Drives sclera redness, vein
 // count/creep, and the twitch rate.
@@ -151,12 +152,12 @@ function elder(msg) {
 }
 
 // ---------- pointer / light source ----------
-const light = { x: innerWidth / 2, y: innerHeight / 2, active: false }
+const light = { x: innerWidth / 2, y: innerHeight / 2, px: 0, py: 0, active: false }
 function pointerPos(e) {
   const t = e.touches ? e.touches[0] : e
   return toWorld(t.clientX, t.clientY)
 }
-function onDown(e) { started = true; light.active = true; Object.assign(light, pointerPos(e)); startVerse() }
+function onDown(e) { started = true; light.active = true; Object.assign(light, pointerPos(e)); light.px = light.x; light.py = light.y; startVerse() }
 function onMove(e) { if (light.active) Object.assign(light, pointerPos(e)) }
 function onUp() { light.active = false }
 // Mouse/touch listeners alongside Pointer Events: harmless double-fire on a normal
@@ -223,9 +224,21 @@ let lostCount = 0
 // regenerates. Your only power: the light SHIELDS any unicorn inside its glow —
 // escort them past the eye.
 const GOAL = 13, SHIELD = 66
+let shieldedN = 0 // unicorns inside the light last frame (drives the shield's upkeep)
+// every death, whatever ate it, gets the same ceremony: sound, void-pop, a smear
+// on the glass, a tick on the eye's ledger, and a narrated line
+function kill(u, x, y, why) {
+  lostCount++
+  thud()
+  spawnVoidPop(x, y)
+  addSplat(u.x, u.y, u.hue)
+  bloodshot = min(1, bloodshot + 0.06)
+  u.gone = true
+  elder(`${logLine(why)} (${lostCount} taken)`)
+}
 let phase = 'play' // 'play' | 'dawn' | 'taken'
 let endT = 0, eyeClose = 0
-const shielded = (u) => light.active && hypot(light.x - u.x, light.y - u.y) < SHIELD
+const shielded = (u) => light.active && sky.charge > 0.1 && hypot(light.x - u.x, light.y - u.y) < SHIELD
 // title/how-to intro (fades on the first drag), a saved personal best, and the other
 // riders currently in this sky (their cursors, for the Online layer)
 let started = false, introA = 1, best = 0
@@ -245,8 +258,7 @@ function topUpHerd() {
   let guard = 0
   while (liveCount() < 8 && guard++ < 30) {
     const [wl, wr, wt, wb] = wBounds()
-    const edge = random()
-    const x = edge < 0.5 ? wl + 8 : wr - 8
+    const x = wl + 8
     const y = wt + 20 + random() * (wb - wt - 40)
     // reuse a gone slot if there is one, else grow the array
     const slot = herd.find((u) => u.gone)
@@ -395,7 +407,7 @@ function stepBlobs(dt) {
         u.vx += (dx / d) * g
         u.vy += (dy / d) * g
       }
-      if (d < b.r + 10 && !shielded(u)) { addSplat(u.x, u.y, u.hue); u.gone = true } // consumed (unless shielded)
+      if (d < b.r + 10 && !shielded(u)) kill(u, ax, ay, 'eat') // consumed (unless shielded)
     }
     worldScaleTarget += min(1.2, b.r / (innerWidth * 0.5)) * 0.55
   }
@@ -615,20 +627,25 @@ function spawnVoidPop(x, y) {
 
 function stepHerd(dt, now) {
   const [wl, wr, wt, wb] = wBounds()
-  // The eye notices the nearest unicorn before it strikes — the pupil locks on and
-  // dilates for a beat of dread, instead of the old no-warning grab. eyeTarget is
-  // read by the render loop (gaze snap + dilation) and reset each frame.
-  eyeTarget = null
+  // The eye notices the nearest unicorn before it strikes — the pupil locks on
+  // and dilates for a beat of dread. The lock must be HELD (lockT) before the
+  // strike lands, so the dilation/vein telegraph is a real warning the player
+  // can answer by shielding (a shielded unicorn can't be locked, which breaks
+  // the lock). eyeTarget is read by the render loop (gaze snap + dilation).
+  let newTarget = null
   if (skyElderOpen(now) > 0.3) {
-    const [ex, ey] = skyElderPos(now)
+    const [ex, ey] = pupil
     let best = null, bd = 1e9
     for (const u of herd) {
       if (u.gone || u.sucked || shielded(u)) continue // can't lock what's shielded
       const d = hypot(ex - u.x, ey - u.y)
       if (d < bd) { bd = d; best = u }
     }
-    if (best && bd < 130) eyeTarget = best
+    if (best && bd < 190) newTarget = best
   }
+  lockT = newTarget && newTarget === eyeTarget ? lockT + dt : 0
+  eyeTarget = newTarget
+  shieldedN = 0
 
   for (const u of herd) {
     if (u.gone) continue
@@ -637,24 +654,19 @@ function stepHerd(dt, now) {
     // shrinking, until it's gone. This is the one thing the Elder actually
     // does, rather than just watches: get too close to it and it takes you.
     if (u.sucked) {
-      const [ex, ey] = skyElderPos(now)
+      const [ex, ey] = pupil
       u.suckT += dt * 0.0022
       u.x += (ex - u.x) * 0.16
       u.y += (ey - u.y) * 0.16
       if (u.suckT >= 1) {
-        lostCount++
-        thud()
-        spawnVoidPop(ex, ey)
-        addSplat(u.x, u.y, u.hue)   // remains smear onto the nearest edge of the glass
+        kill(u, ex, ey, 'take')
         irisFlush = { hue: u.hue, t: 1 } // it digests the color: the iris flushes its hue
-        bloodshot = min(1, bloodshot + 0.06) // and the eye reddens a little more
         caps.push(genCap())         // a fresh vein bursts across the white
         if (caps.length > 30) caps.shift()
-        u.gone = true               // topUpHerd() walks a stranger in to replace it
-        elder(`${logLine('take')} (${lostCount} taken)`)
       }
       continue
     }
+    if (shielded(u)) shieldedN++ // counted for the shield's upkeep drain
 
     // steer toward the light when it's active and the sky has some charge —
     // "warm" pulls, "grey" (low charge) lets them drift on their own.
@@ -698,23 +710,23 @@ function stepHerd(dt, now) {
     if (u.y < wt) { u.y = wt; u.vy *= -1; splash(u, u.x, wt) }
     if (u.y > wb) { u.y = wb; u.vy *= -1; splash(u, u.x, wb) }
 
-    // wander into the eye's open pupil and it takes you — unless it's shielded in your
-    // light, or the round has already resolved
-    if (phase === 'play' && !shielded(u) && skyElderOpen(now) > 0.3) {
-      const [ex, ey] = skyElderPos(now)
-      if (hypot(ex - u.x, ey - u.y) < 15 + elderPulse * 10) {
-        u.sucked = true
-        u.suckT = 0
-        continue
-      }
+    // the strike: once the lock has been held for a beat and the prey is inside
+    // the pupil's reach (which grows as it dilates), the eye takes it
+    if (phase === 'play' && u === eyeTarget && lockT > 600 &&
+      hypot(pupil[0] - u.x, pupil[1] - u.y) < 28 + pupilDilate * 30) {
+      u.sucked = true
+      u.suckT = 0
+      continue
     }
 
     // "the valley" — reaching the right edge with enough charge delivers the unicorn.
     // It leaves the board (topUpHerd walks another in), so the count never drops.
-    if (u.x > wr - 24 && sky.charge > 0.5) {
+    if (phase === 'play' && u.x > wr - 24 && sky.charge > 0.5) {
       deliveredCount++
       chime()
       spawnDeliveryBurst(u.x, u.y)
+      bloodshot = max(0.02, bloodshot - 0.05) // each crossing calms the eye a little
+      sky.charge -= 0.04 // — and is paid for in woven light: camping the valley can't run on one bank
       u.gone = true
       elder(`${logLine('cross')} — ${deliveredCount} so far`)
     }
@@ -760,6 +772,7 @@ const makeLine = () => fill(pick(TPL))
 const LOG = {
   wake: ["a {N} in the corner started movin'", 'somethin\' woke up hungry'],
   take: ['gone — the eye keeps the {N}', 'one less; it drinks the {N}'],
+  eat: ['the pile pulled one under', 'the corner ate a {A} one'],
   cross: ['one slipped to the valley', "gone across, don't wave back"],
   hush: ['a quiet {C}, drag to color it', 'the {C} is watching, paint it'],
 }
@@ -1065,6 +1078,7 @@ function drawSkyElder(now) {
   const gx = max(-1, min(1, (gaze.x - cx) / (w * 0.9))) * w * 0.32
   const gy = max(-1, min(1, (gaze.y - cy) / (innerHeight * 0.5))) * w * 0.13
   const dil = pupilDilate, ex = cx + gx, ey = cy + gy
+  pupil = [ex, ey] // the hunt (lock + strike) happens where the pupil is DRAWN
 
   ctx.save()
 
@@ -1346,7 +1360,7 @@ function drawUnicorn(u) {
 
   // shielded in the light: a protective ring — the eye and the piles can't touch it
   if (shielded(u)) {
-    ctx.strokeStyle = `hsla(190,90%,82%,${0.4 + 0.3 * sin(performance.now() * 0.01 + u.gait)})`
+    ctx.strokeStyle = `hsla(190,90%,82%,${(0.4 + 0.3 * sin(performance.now() * 0.01 + u.gait)) * min(1, sky.charge * 2)})`
     ctx.lineWidth = 1.2
     ctx.beginPath(); ctx.arc(0, -3, 14, 0, P2); ctx.stroke()
   }
@@ -1714,17 +1728,20 @@ function loop(t) {
   elderPulse = max(0, elderPulse - dt * 0.0012)
   captionTimer = max(0, captionTimer - dt * 0.00032)
 
-  // charge rises while actively dragging, decays otherwise — this alone is a
-  // complete, satisfying solo game per the "offline-first" rule.
+  // the loom: charge is WOVEN — it rises with how far the light moved, not how
+  // long it's held — and the shield spends it (an upkeep per protected unicorn).
+  // Park to protect, weave to bank, arrive at the valley rich enough to deliver.
   if (light.active) {
-    sky.charge = min(1, sky.charge + dt * 0.0006)
+    sky.charge = min(1, sky.charge + min(20, hypot(light.x - light.px, light.y - light.py)) * 0.0005)
+    sky.charge = max(0, sky.charge - dt * (0.00008 + 0.00002 * shieldedN))
     sky.hue = (sky.hue + dt * 0.02) % 360
     broadcastThrottled()
     trail.push({ x: light.x, y: light.y, hue: sky.hue, life: 1 })
     if (trail.length > 80) trail.shift()
   } else {
-    sky.charge = max(0, sky.charge - dt * 0.00015)
+    sky.charge = max(0, sky.charge - dt * 0.00006)
   }
+  light.px = light.x; light.py = light.y
   for (let i = trail.length - 1; i >= 0; i--) {
     trail[i].life -= dt * 0.0018
     if (trail[i].life <= 0) trail.splice(i, 1)
@@ -1767,7 +1784,7 @@ function loop(t) {
 
   // the eye inflames the whole time it watches, and only ebbs a hair — it remembers.
   // This IS the doom clock: reach 1 and the sky is taken.
-  if (phase === 'play') bloodshot = min(1, max(0, bloodshot + dt * (0.000008 - 0.0000005)))
+  if (phase === 'play') bloodshot = min(1, max(0, bloodshot + dt * 0.00001 * (1 + deliveredCount * 0.08)))
 
   if (started) introA = max(0, introA - dt * 0.0016) // title fades once you grab the light
   // forget riders we haven't heard from in a couple of seconds
