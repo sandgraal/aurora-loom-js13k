@@ -1108,7 +1108,7 @@ function drawSkyElder(now) {
   const gx = max(-1, min(1, (gaze.x - cx) / (w * 0.9))) * w * 0.32
   const gy = max(-1, min(1, (gaze.y - cy) / (innerHeight * 0.5))) * w * 0.13
   const dil = pupilDilate, ex = cx + gx, ey = cy + gy
-  pupil = [ex, ey] // the hunt (lock + strike) happens where the pupil is DRAWN
+pupil[0] = ex; pupil[1] = ey // the hunt (lock + strike) happens where the pupil is DRAWN
 
   ctx.save()
 
